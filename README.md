@@ -18,81 +18,157 @@
     <a href="https://opencollective.com/nest#sponsor"  target="_blank"><img src="https://img.shields.io/badge/Support%20us-Open%20Collective-41B883.svg" alt="Support us"></a>
   <a href="https://twitter.com/nestframework" target="_blank"><img src="https://img.shields.io/twitter/follow/nestframework.svg?style=social&label=Follow" alt="Follow us on Twitter"></a>
 </p>
-  <!--[![Backers on Open Collective](https://opencollective.com/nest/backers/badge.svg)](https://opencollective.com/nest#backer)
-  [![Sponsors on Open Collective](https://opencollective.com/nest/sponsors/badge.svg)](https://opencollective.com/nest#sponsor)-->
 
-## Description
+# mixq-back
 
-[Nest](https://github.com/nestjs/nest) framework TypeScript starter repository.
+Backend API en NestJS para MixQ (SaaS de cotizaciones empresariales).
+Arquitectura modular con Prisma + PostgreSQL y seguridad con JWT.
 
-## Project setup
+## Requisitos
 
-```bash
-$ pnpm install
-```
+- Node.js (LTS recomendado)
+- pnpm
+- PostgreSQL
 
-## Compile and run the project
-
-```bash
-# development
-$ pnpm run start
-
-# watch mode
-$ pnpm run start:dev
-
-# production mode
-$ pnpm run start:prod
-```
-
-## Run tests
+## Instalacion
 
 ```bash
-# unit tests
-$ pnpm run test
-
-# e2e tests
-$ pnpm run test:e2e
-
-# test coverage
-$ pnpm run test:cov
+pnpm install
 ```
 
-## Deployment
+## Configuracion
 
-When you're ready to deploy your NestJS application to production, there are some key steps you can take to ensure it runs as efficiently as possible. Check out the [deployment documentation](https://docs.nestjs.com/deployment) for more information.
-
-If you are looking for a cloud-based platform to deploy your NestJS application, check out [Mau](https://mau.nestjs.com), our official platform for deploying NestJS applications on AWS. Mau makes deployment straightforward and fast, requiring just a few simple steps:
+Variables esperadas:
 
 ```bash
-$ pnpm install -g @nestjs/mau
-$ mau deploy
+DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DB?schema=public"
+JWT_SECRET="change-me"
+JWT_EXPIRES_IN="1d"
 ```
 
-With Mau, you can deploy your application in just a few clicks, allowing you to focus on building features rather than managing infrastructure.
+## Comandos utiles
 
-## Resources
+```bash
+# desarrollo
+pnpm run start:dev
 
-Check out a few resources that may come in handy when working with NestJS:
+# produccion
+pnpm run build
+pnpm run start:prod
 
-- Visit the [NestJS Documentation](https://docs.nestjs.com) to learn more about the framework.
-- For questions and support, please visit our [Discord channel](https://discord.gg/G7Qnnhy).
-- To dive deeper and get more hands-on experience, check out our official video [courses](https://courses.nestjs.com/).
-- Deploy your application to AWS with the help of [NestJS Mau](https://mau.nestjs.com) in just a few clicks.
-- Visualize your application graph and interact with the NestJS application in real-time using [NestJS Devtools](https://devtools.nestjs.com).
-- Need help with your project (part-time to full-time)? Check out our official [enterprise support](https://enterprise.nestjs.com).
-- To stay in the loop and get updates, follow us on [X](https://x.com/nestframework) and [LinkedIn](https://linkedin.com/company/nestjs).
-- Looking for a job, or have a job to offer? Check out our official [Jobs board](https://jobs.nestjs.com).
+# lint y format
+pnpm run lint
+pnpm run format
 
-## Support
+# tests
+pnpm run test
+pnpm run test:e2e
+pnpm run test:cov
+```
 
-Nest is an MIT-licensed open source project. It can grow thanks to the sponsors and support by the amazing backers. If you'd like to join them, please [read more here](https://docs.nestjs.com/support).
+## Endpoints actuales
 
-## Stay in touch
+Base URL local: `http://localhost:3000`
 
-- Author - [Kamil Myśliwiec](https://twitter.com/kammysliwiec)
-- Website - [https://nestjs.com](https://nestjs.com/)
-- Twitter - [@nestframework](https://twitter.com/nestframework)
+### Salud
 
-## License
+- `GET /` -> "Hello World!"
 
-Nest is [MIT licensed](https://github.com/nestjs/nest/blob/master/LICENSE).
+### Auth
+
+- `POST /auth/register`
+- `POST /auth/login` (retorna 200)
+- `GET /auth/me`
+
+### Services
+
+- `POST /services`
+- `GET /services`
+- `GET /services/:id`
+- `PATCH /services/:id`
+- `DELETE /services/:id`
+
+### Service categories
+
+- `POST /services/categories`
+- `GET /services/categories`
+- `GET /services/categories/:id`
+- `PATCH /services/categories/:id`
+- `DELETE /services/categories/:id`
+
+### Templates
+
+- `GET /templates?type=system|user`
+- `GET /templates/:id`
+- `POST /templates`
+- `POST /templates/:id/clone`
+- `PATCH /templates/:id`
+- `DELETE /templates/:id`
+
+### Quotes
+
+- `POST /quotes`
+- `GET /quotes`
+- `GET /quotes/:id`
+- `PATCH /quotes/:id`
+- `DELETE /quotes/:id`
+
+### Sender profile
+
+- `GET /sender-profile`
+- `PUT /sender-profile`
+
+### Subscriptions
+
+- `GET /subscriptions/me`
+
+### Stats
+
+- `POST /stats`
+- `GET /stats`
+- `GET /stats/:id`
+- `PATCH /stats/:id`
+- `DELETE /stats/:id`
+
+## Modelo de datos (Prisma)
+
+Archivo: `prisma/schema.prisma`
+
+- `User`: cuenta del sistema; propietario de todos los datos (multiusuario por `userId`).
+- `Service`: catalogo de servicios del usuario con inventario (codigo, categoria, precio unitario, stock).
+- `Category`: categorias de servicios por usuario.
+- `Template`: plantilla de cotizacion (system/user) con secciones editables.
+- `TemplateSection`: bloque de la plantilla (header, cliente, tabla, totales, etc.).
+- `TemplateItem`: campo dentro de cada seccion (texto, campo, columna).
+- `Quote`: cotizacion generada; snapshot de plantilla y totales calculados en backend.
+- `QuoteSection`: snapshot de secciones de plantilla.
+- `QuoteSectionItem`: snapshot de items de seccion.
+- `QuoteItem`: filas de servicios (items) con precios y cantidades.
+- `User.onboardingCompleted`: true si existe displayName + contactEmail.
+- `User.plan`: FREE | PRO (default FREE).
+- `User.subscriptionStatus`: ACTIVE | CANCELED | PAST_DUE.
+- `User.currentPeriodEnd`: fin de ciclo (opcional).
+- `SenderProfile`: perfil del emisor (displayName, contacto, legales opcionales).
+- `QuoteStatus`: estado de la cotizacion (DRAFT, SENT, ACCEPTED, REJECTED, CANCELLED).
+
+## Estructura
+
+```text
+prisma/
+  schema.prisma
+src/
+  app.module.ts
+  auth/
+    auth.controller.ts
+    auth.service.ts
+    dto/
+  stats/
+    stats.controller.ts
+    stats.service.ts
+    dto/
+```
+
+## Estado
+
+- El esquema Prisma base ya esta definido.
+- Aun no hay persistencia ni auth real configurada.
