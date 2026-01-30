@@ -13,6 +13,18 @@ async function bootstrap() {
       transform: true,
     }),
   );
+  const origins =
+    process.env.CORS_ORIGINS?.split(',')
+      .map((origin) => origin.trim())
+      .filter(Boolean) ?? [];
+  if (origins.length > 0) {
+    app.enableCors({
+      origin: origins,
+      credentials: true,
+    });
+  } else if (process.env.NODE_ENV !== 'production') {
+    app.enableCors();
+  }
   app.useStaticAssets(join(process.cwd(), 'uploads'), {
     prefix: '/uploads',
   });
