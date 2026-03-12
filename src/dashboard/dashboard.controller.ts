@@ -18,30 +18,31 @@ export class DashboardController {
 
   @Get('summary')
   summary(@CurrentUser() user: AuthUser) {
-    return this.dashboardService.getSummary(user.id);
+    return this.dashboardService.getSummary(user.workspaceId);
   }
 
   @Get('metrics')
   metrics(
     @CurrentUser() user: AuthUser,
-    @Query('range') range = 'month',
+    @Query('range') range?: string,
   ) {
-    if (range !== 'month') {
-      throw new BadRequestException('Unsupported range');
+    if (range && range !== 'month') {
+      throw new BadRequestException('range must be month');
     }
-    return this.dashboardService.getMetrics(user.id, range);
+
+    return this.dashboardService.getMetrics(user.workspaceId, 'month');
   }
 
   @Get('recent')
   recent(
     @CurrentUser() user: AuthUser,
-    @Query('limit', new ParseIntPipe({ optional: true })) limit = 5,
+    @Query('limit', new ParseIntPipe({ optional: true })) limit?: number,
   ) {
-    return this.dashboardService.getRecent(user.id, limit);
+    return this.dashboardService.getRecent(user.workspaceId, limit ?? 5);
   }
 
   @Get('alerts')
   alerts(@CurrentUser() user: AuthUser) {
-    return this.dashboardService.getAlerts(user.id);
+    return this.dashboardService.getAlerts(user.workspaceId);
   }
 }

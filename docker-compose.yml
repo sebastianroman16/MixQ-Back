@@ -6,11 +6,11 @@ services:
     container_name: mixq-postgres
     restart: unless-stopped
     environment:
-      POSTGRES_USER: mixq_user
-      POSTGRES_PASSWORD: mixq_pass
-      POSTGRES_DB: mixq
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: buExLnCCqPGeUgQlnRjvPmVNWQbvtkKF
+      POSTGRES_DB: railway
     ports:
-      - "5432:5432"
+      - "41137:41137"
     volumes:
       - mixq_pgdata:/var/lib/postgresql/data
 

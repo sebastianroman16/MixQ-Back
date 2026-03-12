@@ -1,6 +1,5 @@
 import {
   ConflictException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
@@ -19,11 +18,11 @@ export class ServicesService {
     private readonly subscriptionsService: SubscriptionsService,
   ) {}
 
-  async create(userId: string, dto: CreateServiceDto) {
+  async create(userId: string, workspaceId: string, dto: CreateServiceDto) {
     await this.subscriptionsService.assertCanCreateService(userId);
-    const category = await this.ensureCategoryAccess(userId, dto.categoryId);
+    const category = await this.ensureCategoryAccess(workspaceId, dto.categoryId);
     const inventoryCode = await this.generateInventoryCode(
-      userId,
+      workspaceId,
       category.id,
       category.name,
     );
@@ -32,6 +31,7 @@ export class ServicesService {
       return await this.prisma.service.create({
         data: {
           userId,
+          workspaceId,
           inventoryCode,
           name: dto.name,
           description: dto.description,
@@ -51,17 +51,17 @@ export class ServicesService {
     }
   }
 
-  findAll(userId: string) {
+  findAll(workspaceId: string) {
     return this.prisma.service.findMany({
-      where: { userId },
+      where: { workspaceId },
       orderBy: { createdAt: 'desc' },
       include: { category: true },
     });
   }
 
-  async findOne(userId: string, id: string) {
-    const service = await this.prisma.service.findUnique({
-      where: { id },
+  async findOne(workspaceId: string, id: string) {
+    const service = await this.prisma.service.findFirst({
+      where: { id, workspaceId },
       include: { category: true },
     });
 
@@ -69,22 +69,18 @@ export class ServicesService {
       throw new NotFoundException('Service not found');
     }
 
-    if (service.userId !== userId) {
-      throw new ForbiddenException('Access denied');
-    }
-
     return service;
   }
 
-  async update(userId: string, id: string, dto: UpdateServiceDto) {
-    const service = await this.ensureServiceAccess(userId, id);
+  async update(userId: string, workspaceId: string, id: string, dto: UpdateServiceDto) {
+    const service = await this.ensureServiceAccess(workspaceId, id);
     let inventoryCode: string | undefined;
 
     if (dto.categoryId) {
-      const category = await this.ensureCategoryAccess(userId, dto.categoryId);
+      const category = await this.ensureCategoryAccess(workspaceId, dto.categoryId);
       if (category.id !== service.categoryId) {
         inventoryCode = await this.generateInventoryCode(
-          userId,
+          workspaceId,
           category.id,
           category.name,
         );
@@ -95,6 +91,8 @@ export class ServicesService {
       return await this.prisma.service.update({
         where: { id: service.id },
         data: {
+          userId,
+          workspaceId,
           inventoryCode,
           name: dto.name,
           description: dto.description,
@@ -115,56 +113,41 @@ export class ServicesService {
     }
   }
 
-  async remove(userId: string, id: string) {
-    const service = await this.ensureServiceAccess(userId, id);
+  async remove(workspaceId: string, id: string) {
+    const service = await this.ensureServiceAccess(workspaceId, id);
     return this.prisma.service.delete({ where: { id: service.id } });
   }
 
-  async createCategory(userId: string, dto: CreateCategoryDto) {
+  async createCategory(userId: string, workspaceId: string, dto: CreateCategoryDto) {
     return this.prisma.category.create({
       data: {
         userId,
+        workspaceId,
         name: dto.name,
       },
     });
   }
 
-  listCategories(userId: string) {
+  listCategories(workspaceId: string) {
     return this.prisma.category.findMany({
-      where: { userId },
+      where: { workspaceId },
       orderBy: { name: 'asc' },
     });
   }
 
-  async getCategory(userId: string, id: string) {
-    const category = await this.prisma.category.findUnique({
-      where: { id },
-    });
-
-    if (!category) {
-      throw new NotFoundException('Category not found');
-    }
-
-    if (category.userId !== userId) {
-      throw new ForbiddenException('Access denied');
-    }
-
-    return category;
+  async getCategory(workspaceId: string, id: string) {
+    return this.ensureCategoryAccess(workspaceId, id);
   }
 
-  async updateCategory(userId: string, id: string, dto: UpdateCategoryDto) {
+  async updateCategory(workspaceId: string, id: string, dto: UpdateCategoryDto) {
     try {
       return await this.prisma.$transaction(async (tx) => {
-        const existing = await tx.category.findUnique({
-          where: { id },
+        const existing = await tx.category.findFirst({
+          where: { id, workspaceId },
         });
 
         if (!existing) {
           throw new NotFoundException('Category not found');
-        }
-
-        if (existing.userId !== userId) {
-          throw new ForbiddenException('Access denied');
         }
 
         const category = await tx.category.update({
@@ -177,7 +160,7 @@ export class ServicesService {
         const prefix = this.buildPrefix(category.name);
         const services = await tx.service.findMany({
           where: {
-            userId,
+            workspaceId,
             categoryId: category.id,
           },
           orderBy: { createdAt: 'asc' },
@@ -209,39 +192,31 @@ export class ServicesService {
     }
   }
 
-  async removeCategory(userId: string, id: string) {
-    const category = await this.getCategory(userId, id);
+  async removeCategory(workspaceId: string, id: string) {
+    const category = await this.getCategory(workspaceId, id);
     return this.prisma.category.delete({ where: { id: category.id } });
   }
 
-  private async ensureServiceAccess(userId: string, id: string) {
-    const service = await this.prisma.service.findUnique({
-      where: { id },
+  private async ensureServiceAccess(workspaceId: string, id: string) {
+    const service = await this.prisma.service.findFirst({
+      where: { id, workspaceId },
     });
 
     if (!service) {
       throw new NotFoundException('Service not found');
     }
 
-    if (service.userId !== userId) {
-      throw new ForbiddenException('Access denied');
-    }
-
     return service;
   }
 
-  private async ensureCategoryAccess(userId: string, id: string) {
-    const category = await this.prisma.category.findUnique({
-      where: { id },
+  private async ensureCategoryAccess(workspaceId: string, id: string) {
+    const category = await this.prisma.category.findFirst({
+      where: { id, workspaceId },
       select: { id: true, userId: true, name: true },
     });
 
     if (!category) {
       throw new NotFoundException('Category not found');
-    }
-
-    if (category.userId !== userId) {
-      throw new ForbiddenException('Access denied');
     }
 
     return category;
@@ -268,14 +243,14 @@ export class ServicesService {
   }
 
   private async generateInventoryCode(
-    userId: string,
+    workspaceId: string,
     categoryId: string,
     categoryName: string,
   ) {
     const prefix = this.buildPrefix(categoryName);
     const latest = await this.prisma.service.findFirst({
       where: {
-        userId,
+        workspaceId,
         categoryId,
         inventoryCode: { startsWith: prefix },
       },

@@ -6,47 +6,58 @@ import { UpsertSenderProfileDto } from './dto/upsert-sender-profile.dto';
 export class SenderProfileService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getProfile(userId: string) {
-    return this.prisma.senderProfile.findUnique({
-      where: { userId },
+  async getProfile(workspaceId: string) {
+    return this.prisma.senderProfile.findFirst({
+      where: { workspaceId },
+      orderBy: { updatedAt: 'desc' },
     });
   }
 
-  async upsertProfile(userId: string, dto: UpsertSenderProfileDto) {
-    const profile = await this.prisma.senderProfile.upsert({
-      where: { userId },
-      update: {
-        displayName: dto.displayName,
-        contactEmail: dto.contactEmail,
-        contactPhone: dto.contactPhone,
-        address: dto.address,
-        addressLine: dto.addressLine,
-        city: dto.city,
-        commune: dto.commune,
-        logoUrl: dto.logoUrl,
-        legalName: dto.legalName,
-        rut: dto.rut,
-        giro: dto.giro,
-      },
-      create: {
-        userId,
-        displayName: dto.displayName,
-        contactEmail: dto.contactEmail,
-        contactPhone: dto.contactPhone,
-        address: dto.address,
-        addressLine: dto.addressLine,
-        city: dto.city,
-        commune: dto.commune,
-        logoUrl: dto.logoUrl,
-        legalName: dto.legalName,
-        rut: dto.rut,
-        giro: dto.giro,
-      },
+  async upsertProfile(userId: string, workspaceId: string, dto: UpsertSenderProfileDto) {
+    const existing = await this.prisma.senderProfile.findFirst({
+      where: { workspaceId },
+      orderBy: { updatedAt: 'desc' },
+      select: { id: true },
     });
 
-    const onboardingCompleted = Boolean(
-      profile.displayName && profile.contactEmail,
-    );
+    const profile = existing
+      ? await this.prisma.senderProfile.update({
+          where: { id: existing.id },
+          data: {
+            userId,
+            workspaceId,
+            displayName: dto.displayName,
+            contactEmail: dto.contactEmail,
+            contactPhone: dto.contactPhone,
+            address: dto.address,
+            addressLine: dto.addressLine,
+            city: dto.city,
+            commune: dto.commune,
+            logoUrl: dto.logoUrl,
+            legalName: dto.legalName,
+            rut: dto.rut,
+            giro: dto.giro,
+          },
+        })
+      : await this.prisma.senderProfile.create({
+          data: {
+            userId,
+            workspaceId,
+            displayName: dto.displayName,
+            contactEmail: dto.contactEmail,
+            contactPhone: dto.contactPhone,
+            address: dto.address,
+            addressLine: dto.addressLine,
+            city: dto.city,
+            commune: dto.commune,
+            logoUrl: dto.logoUrl,
+            legalName: dto.legalName,
+            rut: dto.rut,
+            giro: dto.giro,
+          },
+        });
+
+    const onboardingCompleted = Boolean(profile.displayName && profile.contactEmail);
 
     await this.prisma.user.update({
       where: { id: userId },

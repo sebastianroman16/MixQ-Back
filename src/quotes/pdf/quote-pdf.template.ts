@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { calculateQuoteTotals } from '../utils/quote-totals';
 
 type QuotePdfItem = {
   title: string;
@@ -35,6 +36,7 @@ type QuotePdfData = {
   logoUrl: string | null;
   sections?: QuotePdfSection[];
   templateName?: string | null;
+  templateTheme?: Prisma.JsonValue | null;
 };
 
 const MONTHS = [
@@ -106,6 +108,29 @@ const asRecord = (value: Prisma.JsonValue | null) =>
   value && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, string>)
     : {};
+
+const asUnknownRecord = (value: Prisma.JsonValue | null) =>
+  value && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {};
+
+const asThemeString = (
+  theme: Record<string, unknown>,
+  key: string,
+  fallback: string,
+) => {
+  const value = theme[key];
+  return typeof value === 'string' && value.trim() ? value : fallback;
+};
+
+const asThemeNumber = (
+  theme: Record<string, unknown>,
+  key: string,
+  fallback: number,
+) => {
+  const value = Number(theme[key]);
+  return Number.isFinite(value) ? value : fallback;
+};
 
 const splitDescription = (description: string) =>
   description
@@ -189,21 +214,31 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
     getSectionValue(quote.sections, 'SUBTITLE', 'Descripcion');
   const termsText = quote.termsText || getSectionText(quote.sections, 'TERMS');
   const logoUrl = quote.logoUrl;
+  const theme = asUnknownRecord(quote.templateTheme ?? null);
+  const themeSheet = asThemeString(theme, 'sheet', '#ffffff');
+  const themeText = asThemeString(theme, 'text', '#0f172a');
+  const themeMuted = asThemeString(theme, 'muted', '#475569');
+  const themeBorder = asThemeString(theme, 'border', '#e2e8f0');
+  const themeHeaderBg = asThemeString(theme, 'headerBg', '#0f172a');
+  const themeHeaderText = asThemeString(theme, 'headerText', '#ffffff');
+  const themeAccent = asThemeString(theme, 'accent', '#5A6FF0');
+  const backgroundImage = asThemeString(theme, 'backgroundImage', '');
+  const overlayRaw = asThemeNumber(theme, 'backgroundOverlay', 0);
+  const overlay = Math.max(0, Math.min(60, overlayRaw)) / 100;
+  const backgroundImageCss = backgroundImage
+    ? `linear-gradient(rgba(255,255,255,${overlay}), rgba(255,255,255,${overlay})), url('${backgroundImage.replace(/'/g, '%27')}')`
+    : `linear-gradient(rgba(255,255,255,${overlay}), rgba(255,255,255,${overlay}))`;
   const taxRate =
     quote.taxRate !== null && quote.taxRate !== undefined
       ? toNumber(quote.taxRate)
       : 19;
   const discount = quote.discount ? toNumber(quote.discount) : 0;
 
-  const subtotal = quote.items.reduce(
-    (acc, item) =>
-      acc +
-      new Prisma.Decimal(item.unitPrice).mul(item.quantity).toNumber(),
-    0,
-  );
-  const netTotal = Math.max(subtotal - discount, 0);
-  const taxTotal = Math.round(netTotal * (taxRate / 100));
-  const total = netTotal + taxTotal;
+  const totals = calculateQuoteTotals(quote.items, discount, taxRate);
+  const subtotal = totals.subtotal;
+  const netTotal = totals.netTotal;
+  const taxTotal = totals.taxTotal;
+  const total = totals.total;
 
   const itemsRows = quote.items
     .map((item) => {
@@ -237,127 +272,164 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
     <title>Cotizacion ${escapeHtml(quote.quoteNumber)}</title>
     <style>
       * { box-sizing: border-box; }
+      @page {
+        size: A4;
+        margin: 8mm;
+      }
+      html, body { width: 100%; }
+      h1, h2, h3, h4, p { margin: 0; }
       body {
         margin: 0;
         padding: 0;
         font-family: "Helvetica Neue", Arial, sans-serif;
-        color: var(--preview-text, #0f172a);
+        color: ${escapeHtml(themeText)};
         background: #ffffff;
+        font-size: 12px;
+        line-height: 1.25;
+      }
+      .preview {
+        min-height: calc(297mm - 16mm);
       }
       .preview__sheet {
-        box-shadow: 0 20px 60px rgba(0, 0, 0, 0.25);
-        background: var(--preview-sheet-bg, #ffffff);
-        color: var(--preview-text, #0f172a);
+        box-shadow: 0 12px 30px rgba(0, 0, 0, 0.14);
+        background: ${backgroundImageCss};
+        background-color: ${escapeHtml(themeSheet)};
+        background-size: cover;
+        background-position: center;
+        color: ${escapeHtml(themeText)};
+        padding: 10px;
+        min-height: calc(297mm - 16mm);
+        display: flex;
+        flex-direction: column;
       }
       .preview__header {
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         justify-content: space-between;
-        gap: 1rem;
-        border-bottom: 1px solid var(--preview-border, #e2e8f0);
+        gap: 0.45rem;
+        border-bottom: 1px solid ${escapeHtml(themeBorder)};
+        padding-bottom: 0.35rem;
       }
-      .preview__title { font-size: 1.25rem; font-weight: 600; }
-      .preview__subtitle { font-size: 0.875rem; color: var(--preview-muted, #475569); }
+      .preview__title { font-size: 1.02rem; font-weight: 700; line-height: 1.1; }
+      .preview__subtitle { font-size: 0.72rem; color: ${escapeHtml(themeMuted)}; margin-top: 0.1rem; }
       .preview__quote-number {
-        font-size: 0.875rem;
+        font-size: 0.66rem;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.15em;
+        letter-spacing: 0.11em;
       }
       .preview__hero {
-        margin-top: 1rem;
+        margin-top: 0.42rem;
         display: flex;
         flex-wrap: wrap;
         align-items: center;
         justify-content: space-between;
-        gap: 1rem;
+        gap: 0.5rem;
       }
-      .preview__hero-content { display: flex; flex-direction: column; gap: 0.5rem; }
-      .preview__hero-title { font-size: 1.125rem; font-weight: 600; }
-      .preview__hero-text { font-size: 0.875rem; color: var(--preview-muted, #475569); }
+      .preview__hero-content { display: flex; flex-direction: column; gap: 0.18rem; }
+      .preview__hero-title { font-size: 0.9rem; font-weight: 600; line-height: 1.2; }
+      .preview__hero-text { font-size: 0.74rem; color: ${escapeHtml(themeMuted)}; line-height: 1.28; }
       .preview__multiline { white-space: pre-line; }
       .preview__logo {
         display: flex;
-        height: 4rem;
-        width: 4rem;
+        height: 2.8rem;
+        width: 2.8rem;
         align-items: center;
         justify-content: center;
         border-radius: 9999px;
-        border: 1px solid var(--preview-border, #e2e8f0);
-        font-size: 0.75rem;
-        color: var(--preview-muted, #475569);
+        border: 1px solid ${escapeHtml(themeBorder)};
+        font-size: 0.62rem;
+        color: ${escapeHtml(themeMuted)};
       }
       .preview__logo img { height: 100%; width: 100%; border-radius: 9999px; object-fit: cover; }
-      .preview__info { margin-top: 1.5rem; display: grid; gap: 1.5rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .preview__info { margin-top: 0.55rem; display: grid; gap: 0.65rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
       .preview__info h4 {
-        font-size: 0.875rem;
+        font-size: 0.62rem;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.2em;
-        color: var(--preview-muted, #475569);
+        letter-spacing: 0.12em;
+        color: ${escapeHtml(themeMuted)};
+        margin-bottom: 0.14rem;
       }
-      .preview__info p { font-size: 0.875rem; color: var(--preview-text, #0f172a); }
+      .preview__info p { font-size: 0.66rem; color: ${escapeHtml(themeText)}; line-height: 1.22; margin-top: 0.08rem; }
       .preview__table {
-        margin-top: 1.5rem;
-        border: 1px solid var(--preview-border, #e2e8f0);
+        margin-top: 0.6rem;
+        border: 1px solid ${escapeHtml(themeBorder)};
+        border-radius: 0.34rem;
+        overflow: hidden;
       }
       .preview__table-head {
         display: grid;
         grid-template-columns: 1.4fr 2fr 0.6fr 0.8fr 0.8fr;
-        gap: 0.5rem;
-        padding: 0.5rem 1rem;
-        font-size: 0.75rem;
+        gap: 0.3rem;
+        padding: 0.3rem 0.5rem;
+        font-size: 0.57rem;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.2em;
-        background: var(--preview-header-bg, #0f172a);
-        color: var(--preview-header-text, #ffffff);
+        letter-spacing: 0.08em;
+        background: ${escapeHtml(themeHeaderBg)};
+        color: ${escapeHtml(themeHeaderText)};
       }
       .preview__table-row {
         display: grid;
         grid-template-columns: 1.4fr 2fr 0.6fr 0.8fr 0.8fr;
-        gap: 0.5rem;
-        border-top: 1px solid var(--preview-border, #e2e8f0);
-        padding: 0.75rem 1rem;
-        font-size: 0.875rem;
+        gap: 0.3rem;
+        border-top: 1px solid ${escapeHtml(themeBorder)};
+        padding: 0.33rem 0.5rem;
+        font-size: 0.66rem;
+        line-height: 1.2;
       }
-      .preview__table-title { font-weight: 600; color: var(--preview-text, #0f172a); }
-      .preview__table-desc { font-size: 0.75rem; color: var(--preview-muted, #475569); }
-      .preview__totals { margin-top: 1.5rem; display: grid; gap: 1.5rem; grid-template-columns: 2fr 1fr; }
+      .preview__table-title { font-weight: 600; color: ${escapeHtml(themeText)}; }
+      .preview__table-desc { font-size: 0.6rem; color: ${escapeHtml(themeMuted)}; line-height: 1.2; margin-top: 0.05rem; }
+      .preview__totals { margin-top: 0.6rem; display: grid; gap: 0.7rem; grid-template-columns: 1.6fr 1fr; }
       .preview__terms h4,
       .preview__footer h4 {
-        font-size: 0.875rem;
+        font-size: 0.62rem;
         font-weight: 600;
         text-transform: uppercase;
-        letter-spacing: 0.2em;
-        color: var(--preview-muted, #475569);
+        letter-spacing: 0.1em;
+        color: ${escapeHtml(themeMuted)};
       }
       .preview__terms p,
       .preview__footer p {
-        margin-top: 0.5rem;
-        font-size: 0.875rem;
-        color: var(--preview-text, #0f172a);
+        margin-top: 0.14rem;
+        font-size: 0.65rem;
+        line-height: 1.2;
+        color: ${escapeHtml(themeText)};
       }
       .preview__terms-text { white-space: pre-line; }
       .preview__totals-box {
-        border-radius: 0.75rem;
-        border: 1px solid var(--preview-border, #e2e8f0);
-        padding: 1rem;
-        font-size: 0.875rem;
-        color: var(--preview-text, #0f172a);
+        border-radius: 0.42rem;
+        border: 1px solid ${escapeHtml(themeBorder)};
+        padding: 0.36rem 0.45rem;
+        font-size: 0.65rem;
+        color: ${escapeHtml(themeText)};
       }
       .preview__totals-box div {
         display: flex;
         align-items: center;
         justify-content: space-between;
-        gap: 0.75rem;
-        border-bottom: 1px solid var(--preview-border, #e2e8f0);
-        padding: 0.5rem 0;
+        gap: 0.35rem;
+        border-bottom: 1px solid ${escapeHtml(themeBorder)};
+        padding: 0.2rem 0;
       }
       .preview__totals-box div:last-child { border-bottom: 0; }
-      .preview__totals-total { color: var(--preview-accent, #5A6FF0); }
-      .preview__footer { margin-top: 1.5rem; display: grid; gap: 1.5rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .preview__totals-total { color: ${escapeHtml(themeAccent)}; }
+      .preview__footer { margin-top: 0.6rem; display: grid; gap: 0.7rem; grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .preview__bottom {
+        margin-top: auto;
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
+      .preview__header,
+      .preview__hero,
+      .preview__info,
+      .preview__totals,
+      .preview__footer {
+        break-inside: avoid;
+        page-break-inside: avoid;
+      }
     </style>
   </head>
   <body>
@@ -441,61 +513,63 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
           ${itemsRows}
         </section>
 
-        <section class="preview__totals">
-          <div class="preview__terms">
-            <h4>Terminos y condiciones</h4>
-            <p class="preview__terms-text">${escapeHtml(
-              formatIndentedText(termsText),
-            )}</p>
-          </div>
-          <div class="preview__totals-box">
-            <div><span>Subtotal</span><strong>${formatNumber(subtotal)}</strong></div>
-            ${
-              discount > 0
-                ? `<div><span>Descuento</span><strong>${formatNumber(
-                    discount,
-                  )}</strong></div>`
-                : ''
-            }
-            <div><span>Total Neto</span><strong>${formatNumber(
-              netTotal,
-            )}</strong></div>
-            <div><span>IVA ${formatNumber(taxRate)}%</span><strong>${formatNumber(
-              taxTotal,
-            )}</strong></div>
-            <div class="preview__totals-total"><span>Total</span><strong>${formatNumber(
-              total,
-            )}</strong></div>
-          </div>
-        </section>
+        <section class="preview__bottom">
+          <section class="preview__totals">
+            <div class="preview__terms">
+              <h4>Terminos y condiciones</h4>
+              <p class="preview__terms-text">${escapeHtml(
+                formatIndentedText(termsText),
+              )}</p>
+            </div>
+            <div class="preview__totals-box">
+              <div><span>Subtotal</span><strong>${formatNumber(subtotal)}</strong></div>
+              ${
+                discount > 0
+                  ? `<div><span>Descuento</span><strong>${formatNumber(
+                      discount,
+                    )}</strong></div>`
+                  : ''
+              }
+              <div><span>Total Neto</span><strong>${formatNumber(
+                netTotal,
+              )}</strong></div>
+              <div><span>IVA ${formatNumber(taxRate)}%</span><strong>${formatNumber(
+                taxTotal,
+              )}</strong></div>
+              <div class="preview__totals-total"><span>Total</span><strong>${formatNumber(
+                total,
+              )}</strong></div>
+            </div>
+          </section>
 
-        <section class="preview__footer">
-          <div>
-            <h4>Informacion de pago</h4>
-            <p><strong>Nombre del beneficiario:</strong> ${escapeHtml(
-              valueOrDash(payment.beneficiaryName),
-            )}</p>
-            <p><strong>RUT:</strong> ${escapeHtml(valueOrDash(payment.rut))}</p>
-            <p><strong>Banco:</strong> ${escapeHtml(valueOrDash(payment.bank))}</p>
-            <p><strong>Tipo de cuenta:</strong> ${escapeHtml(
-              valueOrDash(payment.accountType),
-            )}</p>
-            <p><strong>Numero de cuenta:</strong> ${escapeHtml(
-              valueOrDash(payment.accountNumber),
-            )}</p>
-          </div>
-          <div>
-            <h4>Datos de contacto</h4>
-            <p><strong>Correo:</strong> ${escapeHtml(
-              valueOrDash(contact.email),
-            )}</p>
-            <p><strong>Numero telefonico:</strong> ${escapeHtml(
-              valueOrDash(contact.phone),
-            )}</p>
-            <p><strong>Direccion:</strong> ${escapeHtml(
-              valueOrDash(contact.address),
-            )}</p>
-          </div>
+          <section class="preview__footer">
+            <div>
+              <h4>Informacion de pago</h4>
+              <p><strong>Nombre del beneficiario:</strong> ${escapeHtml(
+                valueOrDash(payment.beneficiaryName),
+              )}</p>
+              <p><strong>RUT:</strong> ${escapeHtml(valueOrDash(payment.rut))}</p>
+              <p><strong>Banco:</strong> ${escapeHtml(valueOrDash(payment.bank))}</p>
+              <p><strong>Tipo de cuenta:</strong> ${escapeHtml(
+                valueOrDash(payment.accountType),
+              )}</p>
+              <p><strong>Numero de cuenta:</strong> ${escapeHtml(
+                valueOrDash(payment.accountNumber),
+              )}</p>
+            </div>
+            <div>
+              <h4>Datos de contacto</h4>
+              <p><strong>Correo:</strong> ${escapeHtml(
+                valueOrDash(contact.email),
+              )}</p>
+              <p><strong>Numero telefonico:</strong> ${escapeHtml(
+                valueOrDash(contact.phone),
+              )}</p>
+              <p><strong>Direccion:</strong> ${escapeHtml(
+                valueOrDash(contact.address),
+              )}</p>
+            </div>
+          </section>
         </section>
       </div>
     </section>

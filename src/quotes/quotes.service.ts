@@ -1,5 +1,6 @@
 import {
   BadRequestException,
+  ConflictException,
   ForbiddenException,
   Injectable,
   NotFoundException,
@@ -11,6 +12,28 @@ import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateQuoteDto } from './dto/create-quote.dto';
 import { UpdateQuoteDto } from './dto/update-quote.dto';
 import { renderQuotePdfHtml } from './pdf/quote-pdf.template';
+import {
+  calculateQuoteTotals,
+  DISCOUNT_EXCEEDS_SUBTOTAL,
+} from './utils/quote-totals';
+
+const QUOTE_STATUS_TRANSITIONS: Record<QuoteStatus, QuoteStatus[]> = {
+  [QuoteStatus.DRAFT]: [QuoteStatus.SENT, QuoteStatus.CANCELLED],
+  [QuoteStatus.SENT]: [
+    QuoteStatus.VIEWED,
+    QuoteStatus.ACCEPTED,
+    QuoteStatus.REJECTED,
+    QuoteStatus.CANCELLED,
+  ],
+  [QuoteStatus.VIEWED]: [
+    QuoteStatus.ACCEPTED,
+    QuoteStatus.REJECTED,
+    QuoteStatus.CANCELLED,
+  ],
+  [QuoteStatus.ACCEPTED]: [],
+  [QuoteStatus.REJECTED]: [],
+  [QuoteStatus.CANCELLED]: [],
+};
 
 @Injectable()
 export class QuotesService {
@@ -19,9 +42,9 @@ export class QuotesService {
     private readonly subscriptionsService: SubscriptionsService,
   ) {}
 
-  list(userId: string) {
+  list(workspaceId: string) {
     return this.prisma.quote.findMany({
-      where: { userId },
+      where: { workspaceId },
       orderBy: { createdAt: 'desc' },
       include: {
         items: { orderBy: { position: 'asc' } },
@@ -29,9 +52,9 @@ export class QuotesService {
     });
   }
 
-  async get(userId: string, id: string) {
-    const quote = await this.prisma.quote.findUnique({
-      where: { id },
+  async get(workspaceId: string, id: string) {
+    const quote = await this.prisma.quote.findFirst({
+      where: { id, workspaceId },
       include: {
         sections: {
           orderBy: { position: 'asc' },
@@ -47,17 +70,19 @@ export class QuotesService {
       throw new NotFoundException('Quote not found');
     }
 
-    if (quote.userId !== userId) {
-      throw new ForbiddenException('Access denied');
-    }
-
     return quote;
   }
 
-  async create(userId: string, dto: CreateQuoteDto) {
+  async create(userId: string, workspaceId: string, dto: CreateQuoteDto) {
     await this.subscriptionsService.assertCanCreateQuote(userId);
-    const template = await this.prisma.template.findUnique({
-      where: { id: dto.templateId },
+    const template = await this.prisma.template.findFirst({
+      where: {
+        id: dto.templateId,
+        OR: [
+          { type: TemplateType.SYSTEM, userId: null },
+          { type: TemplateType.USER, workspaceId },
+        ],
+      },
       include: {
         sections: {
           orderBy: { position: 'asc' },
@@ -72,10 +97,6 @@ export class QuotesService {
       throw new NotFoundException('Template not found');
     }
 
-    if (template.type === TemplateType.USER && template.userId !== userId) {
-      throw new ForbiddenException('Access denied');
-    }
-
     const issuedAt = new Date(dto.issuedAt);
     const validUntil = new Date(dto.validUntil);
     if (Number.isNaN(issuedAt.getTime()) || Number.isNaN(validUntil.getTime())) {
@@ -86,15 +107,20 @@ export class QuotesService {
       throw new BadRequestException('validUntil must be after issuedAt');
     }
 
-    const senderProfile = await this.prisma.senderProfile.findUnique({
-      where: { userId },
+    await this.assertItemServicesOwnership(workspaceId, dto.items);
+
+    const senderProfile = await this.prisma.senderProfile.findFirst({
+      where: { workspaceId },
+      orderBy: { updatedAt: 'desc' },
     });
 
     const totals = this.calculateTotals(dto.items, dto.discount, dto.taxRate);
+    const now = new Date();
 
     return this.prisma.quote.create({
       data: {
         userId,
+        workspaceId,
         templateId: template.id,
         status: QuoteStatus.DRAFT,
         quoteNumber: dto.quoteNumber,
@@ -116,6 +142,15 @@ export class QuotesService {
         total: totals.total,
         issuedAt,
         validUntil,
+        statusHistory: {
+          create: {
+            fromStatus: null,
+            toStatus: QuoteStatus.DRAFT,
+            changedBy: userId,
+            source: 'INTERNAL',
+            changedAt: now,
+          },
+        },
         sections: {
           create: template.sections.map((section) => ({
             title: section.title,
@@ -155,9 +190,9 @@ export class QuotesService {
     });
   }
 
-  async update(userId: string, id: string, dto: UpdateQuoteDto) {
-    const quote = await this.prisma.quote.findUnique({
-      where: { id },
+  async update(userId: string, workspaceId: string, id: string, dto: UpdateQuoteDto) {
+    const quote = await this.prisma.quote.findFirst({
+      where: { id, workspaceId },
       include: { items: true },
     });
 
@@ -165,18 +200,12 @@ export class QuotesService {
       throw new NotFoundException('Quote not found');
     }
 
-    if (quote.userId !== userId) {
-      throw new ForbiddenException('Access denied');
-    }
-
     if (dto.templateId) {
       throw new BadRequestException('Template cannot be changed');
     }
 
     const issuedAt = dto.issuedAt ? new Date(dto.issuedAt) : quote.issuedAt;
-    const validUntil = dto.validUntil
-      ? new Date(dto.validUntil)
-      : quote.validUntil;
+    const validUntil = dto.validUntil ? new Date(dto.validUntil) : quote.validUntil;
 
     if (issuedAt > validUntil) {
       throw new BadRequestException('validUntil must be after issuedAt');
@@ -190,21 +219,39 @@ export class QuotesService {
       serviceId: item.serviceId ?? undefined,
     }));
 
+    if (dto.items) {
+      await this.assertItemServicesOwnership(workspaceId, dto.items);
+    }
+
     const totals = this.calculateTotals(
       items,
       dto.discount ?? Number(quote.discount),
       dto.taxRate ?? Number(quote.taxRate),
     );
 
+    const nextStatus = dto.status;
+    const now = new Date();
+
+    if (nextStatus && nextStatus !== quote.status) {
+      this.assertStatusTransition(quote.status, nextStatus);
+    }
+
     return this.prisma.$transaction(async (tx) => {
       if (dto.items) {
         await tx.quoteItem.deleteMany({ where: { quoteId: quote.id } });
       }
 
+      const transitionPatch =
+        nextStatus && nextStatus !== quote.status
+          ? this.getStatusTransitionPatch(nextStatus, now)
+          : null;
+
       const updated = await tx.quote.update({
         where: { id: quote.id },
         data: {
-          status: dto.status,
+          userId,
+          workspaceId,
+          status: nextStatus,
           quoteNumber: dto.quoteNumber,
           title: dto.title,
           subtitle: dto.subtitle,
@@ -223,6 +270,7 @@ export class QuotesService {
           total: totals.total,
           issuedAt,
           validUntil,
+          ...(transitionPatch ?? {}),
           items: dto.items
             ? {
                 create: dto.items.map((item, index) => ({
@@ -248,41 +296,212 @@ export class QuotesService {
         },
       });
 
+      if (nextStatus && nextStatus !== quote.status) {
+        await tx.quoteStatusHistory.create({
+          data: {
+            quoteId: quote.id,
+            fromStatus: quote.status,
+            toStatus: nextStatus,
+            changedBy: userId,
+            source: 'INTERNAL',
+            changedAt: now,
+          },
+        });
+      }
+
       return updated;
     });
   }
 
-  async remove(userId: string, id: string) {
-    const quote = await this.prisma.quote.findUnique({ where: { id } });
+  async changeStatus(userId: string, workspaceId: string, id: string, status: QuoteStatus) {
+    const quote = await this.prisma.quote.findFirst({
+      where: { id, workspaceId },
+    });
+
     if (!quote) {
       throw new NotFoundException('Quote not found');
     }
-    if (quote.userId !== userId) {
-      throw new ForbiddenException('Access denied');
+
+    if (quote.status === status) {
+      return this.get(workspaceId, id);
+    }
+
+    this.assertStatusTransition(quote.status, status);
+    const now = new Date();
+
+    return this.prisma.$transaction(async (tx) => {
+      await tx.quote.update({
+        where: { id: quote.id },
+        data: {
+          status,
+          ...this.getStatusTransitionPatch(status, now),
+        },
+      });
+
+      await tx.quoteStatusHistory.create({
+        data: {
+          quoteId: quote.id,
+          fromStatus: quote.status,
+          toStatus: status,
+          changedBy: userId,
+          source: 'INTERNAL',
+          changedAt: now,
+        },
+      });
+
+      return tx.quote.findUnique({
+        where: { id: quote.id },
+        include: {
+          sections: {
+            orderBy: { position: 'asc' },
+            include: {
+              items: { orderBy: { position: 'asc' } },
+            },
+          },
+          items: { orderBy: { position: 'asc' } },
+        },
+      });
+    });
+  }
+
+  async duplicate(userId: string, workspaceId: string, id: string) {
+    await this.subscriptionsService.assertCanCreateQuote(userId);
+
+    const source = await this.prisma.quote.findFirst({
+      where: { id, workspaceId },
+      include: {
+        sections: {
+          orderBy: { position: 'asc' },
+          include: {
+            items: { orderBy: { position: 'asc' } },
+          },
+        },
+        items: { orderBy: { position: 'asc' } },
+      },
+    });
+
+    if (!source) {
+      throw new NotFoundException('Quote not found');
+    }
+
+    for (let attempt = 0; attempt < 3; attempt += 1) {
+      const now = new Date();
+      const nextQuoteNumber = await this.getNextQuoteNumber(workspaceId);
+
+      try {
+        return await this.prisma.quote.create({
+          data: {
+            userId,
+            workspaceId,
+            templateId: source.templateId,
+            status: QuoteStatus.DRAFT,
+            quoteNumber: nextQuoteNumber,
+            title: source.title,
+            subtitle: source.subtitle,
+            description: source.description,
+            clientData: this.toRequiredInputJson(source.clientData, 'clientData'),
+            eventData: this.toNullableInputJson(source.eventData),
+            paymentData: this.toNullableInputJson(source.paymentData),
+            contactData: this.toNullableInputJson(source.contactData),
+            logoUrl: source.logoUrl,
+            termsText: source.termsText,
+            senderProfileSnapshot: source.senderProfileSnapshot ?? undefined,
+            subtotal: source.subtotal,
+            discount: source.discount,
+            taxRate: source.taxRate,
+            netTotal: source.netTotal,
+            taxTotal: source.taxTotal,
+            total: source.total,
+            issuedAt: source.issuedAt,
+            validUntil: source.validUntil,
+            sentAt: null,
+            viewedAt: null,
+            acceptedAt: null,
+            rejectedAt: null,
+            cancelledAt: null,
+            statusHistory: {
+              create: {
+                fromStatus: null,
+                toStatus: QuoteStatus.DRAFT,
+                changedBy: userId,
+                source: 'INTERNAL',
+                changedAt: now,
+              },
+            },
+            sections: {
+              create: source.sections.map((section) => ({
+                title: section.title,
+                type: section.type,
+                position: section.position,
+                items: {
+                  create: section.items.map((item) => ({
+                    label: item.label,
+                    value: item.value,
+                    type: item.type,
+                    position: item.position,
+                  })),
+                },
+              })),
+            },
+            items: {
+              create: source.items.map((item) => ({
+                title: item.title,
+                description: item.description,
+                quantity: item.quantity,
+                unitPrice: item.unitPrice,
+                total: item.total,
+                position: item.position,
+                serviceId: item.serviceId,
+              })),
+            },
+          },
+          include: {
+            sections: {
+              orderBy: { position: 'asc' },
+              include: {
+                items: { orderBy: { position: 'asc' } },
+              },
+            },
+            items: { orderBy: { position: 'asc' } },
+          },
+        });
+      } catch (error) {
+        if (this.isQuoteNumberConflict(error)) {
+          continue;
+        }
+        throw error;
+      }
+    }
+
+    throw new ConflictException(
+      'Could not assign a unique quote number for the duplicated quote',
+    );
+  }
+
+  async remove(workspaceId: string, id: string) {
+    const quote = await this.prisma.quote.findFirst({ where: { id, workspaceId } });
+    if (!quote) {
+      throw new NotFoundException('Quote not found');
     }
     return this.prisma.quote.delete({ where: { id: quote.id } });
   }
 
-  async exportPdf(userId: string, id: string) {
+  async exportPdf(userId: string, workspaceId: string, id: string) {
     await this.subscriptionsService.assertCanExportPdf(userId);
-    const quote = await this.prisma.quote.findUnique({
-      where: { id },
+    const quote = await this.prisma.quote.findFirst({
+      where: { id, workspaceId },
       include: {
         items: { orderBy: { position: 'asc' } },
         sections: {
           orderBy: { position: 'asc' },
           include: { items: { orderBy: { position: 'asc' } } },
         },
-        template: { select: { name: true } },
+        template: { select: { name: true, theme: true } },
       },
     });
 
     if (!quote) {
       throw new NotFoundException('Quote not found');
-    }
-
-    if (quote.userId !== userId) {
-      throw new ForbiddenException('Access denied');
     }
 
     if (!quote.title || !quote.clientData || quote.items.length === 0) {
@@ -291,8 +510,14 @@ export class QuotesService {
 
     const html = renderQuotePdfHtml({
       ...quote,
+      items: quote.items.map((item) => ({
+        ...item,
+        description: item.description ?? '',
+      })),
       templateName: quote.template?.name ?? null,
+      templateTheme: quote.template?.theme ?? null,
     });
+
     const browser = await puppeteer.launch({
       args: ['--no-sandbox', '--disable-setuid-sandbox'],
     });
@@ -303,7 +528,9 @@ export class QuotesService {
       const pdfBuffer = await page.pdf({
         format: 'A4',
         printBackground: true,
-        margin: { top: '24px', right: '24px', bottom: '24px', left: '24px' },
+        preferCSSPageSize: true,
+        scale: 0.92,
+        margin: { top: '10px', right: '10px', bottom: '10px', left: '10px' },
       });
       await page.close();
       return pdfBuffer;
@@ -317,29 +544,131 @@ export class QuotesService {
     discount?: number,
     taxRate?: number,
   ) {
-    const subtotal = items.reduce(
-      (acc, item) =>
-        acc.plus(new Prisma.Decimal(item.unitPrice).mul(item.quantity)),
-      new Prisma.Decimal(0),
+    try {
+      return calculateQuoteTotals(items, discount, taxRate);
+    } catch (error) {
+      if (error instanceof Error && error.message === DISCOUNT_EXCEEDS_SUBTOTAL) {
+        throw new BadRequestException(DISCOUNT_EXCEEDS_SUBTOTAL);
+      }
+      throw error;
+    }
+  }
+
+  private async assertItemServicesOwnership(
+    workspaceId: string,
+    items: { serviceId?: string | null }[],
+  ) {
+    const serviceIds = Array.from(
+      new Set(items.map((item) => item.serviceId).filter((id): id is string => !!id)),
     );
 
-    const discountValue = new Prisma.Decimal(discount ?? 0);
-    if (discountValue.greaterThan(subtotal)) {
-      throw new BadRequestException('Discount exceeds subtotal');
+    if (serviceIds.length === 0) {
+      return;
     }
 
-    const netTotal = subtotal.minus(discountValue);
-    const taxRateValue = new Prisma.Decimal(taxRate ?? 0);
-    const taxTotal = netTotal.mul(taxRateValue).div(100);
-    const total = netTotal.minus(taxTotal);
+    const count = await this.prisma.service.count({
+      where: {
+        workspaceId,
+        id: { in: serviceIds },
+      },
+    });
 
-    return {
-      subtotal,
-      discount: discountValue,
-      taxRate: taxRateValue,
-      netTotal,
-      taxTotal,
-      total,
-    };
+    if (count !== serviceIds.length) {
+      throw new ForbiddenException(
+        'One or more referenced services do not belong to the current workspace',
+      );
+    }
+  }
+
+  private assertStatusTransition(from: QuoteStatus, to: QuoteStatus) {
+    const allowed = QUOTE_STATUS_TRANSITIONS[from] ?? [];
+    if (!allowed.includes(to)) {
+      throw new BadRequestException(
+        `Invalid status transition from ${from} to ${to}`,
+      );
+    }
+  }
+
+  private getStatusTransitionPatch(status: QuoteStatus, at: Date) {
+    switch (status) {
+      case QuoteStatus.SENT:
+        return { sentAt: at };
+      case QuoteStatus.VIEWED:
+        return { viewedAt: at };
+      case QuoteStatus.ACCEPTED:
+        return { acceptedAt: at };
+      case QuoteStatus.REJECTED:
+        return { rejectedAt: at };
+      case QuoteStatus.CANCELLED:
+        return { cancelledAt: at };
+      default:
+        return {};
+    }
+  }
+
+  private toRequiredInputJson(
+    value: Prisma.JsonValue,
+    fieldName: string,
+  ): Prisma.InputJsonValue {
+    if (value === null) {
+      throw new BadRequestException(`Quote ${fieldName} cannot be null`);
+    }
+    return value as Prisma.InputJsonValue;
+  }
+
+  private toNullableInputJson(
+    value: Prisma.JsonValue | null,
+  ): Prisma.InputJsonValue | Prisma.NullableJsonNullValueInput | undefined {
+    if (value === null) {
+      return Prisma.JsonNull;
+    }
+    if (typeof value === 'undefined') {
+      return undefined;
+    }
+    return value as Prisma.InputJsonValue;
+  }
+
+  private async getNextQuoteNumber(workspaceId: string): Promise<string> {
+    const quotes = await this.prisma.quote.findMany({
+      where: { workspaceId },
+      select: { quoteNumber: true },
+    });
+
+    let max = 0;
+    for (const quote of quotes) {
+      const parsed = this.extractTrailingNumber(quote.quoteNumber);
+      if (parsed !== null && parsed > max) {
+        max = parsed;
+      }
+    }
+
+    return String(max + 1);
+  }
+
+  private extractTrailingNumber(value: string): number | null {
+    const match = value.match(/(\d+)(?!.*\d)/);
+    if (!match) {
+      return null;
+    }
+    const parsed = Number.parseInt(match[1], 10);
+    return Number.isFinite(parsed) ? parsed : null;
+  }
+
+  private isQuoteNumberConflict(error: unknown): boolean {
+    if (!error || typeof error !== 'object') {
+      return false;
+    }
+
+    const code = (error as { code?: string }).code;
+    if (code !== 'P2002') {
+      return false;
+    }
+
+    const target = (error as { meta?: { target?: unknown } }).meta?.target;
+    if (!Array.isArray(target)) {
+      return true;
+    }
+
+    return target.includes('workspaceId') && target.includes('quoteNumber');
   }
 }

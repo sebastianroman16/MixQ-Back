@@ -5,7 +5,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { User } from '@prisma/client';
+import { User, WorkspaceRole } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { LoginDto } from './dto/login.dto';
@@ -35,19 +35,52 @@ export class AuthService {
     }
 
     const passwordHash = await bcrypt.hash(dto.password, 10);
-    const user = await this.prisma.user.create({
-      data: {
-        email: normalizedEmail,
-        passwordHash,
-        name: dto.name,
-      },
+
+    const created = await this.prisma.$transaction(async (tx) => {
+      const user = await tx.user.create({
+        data: {
+          email: normalizedEmail,
+          passwordHash,
+          name: dto.name,
+        },
+      });
+
+      await tx.workspace.create({
+        data: {
+          id: user.id,
+          name: this.getDefaultWorkspaceName(user),
+          ownerId: user.id,
+        },
+      });
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: { workspaceId: user.id },
+      });
+
+      await tx.workspaceMember.create({
+        data: {
+          workspaceId: user.id,
+          userId: user.id,
+          role: WorkspaceRole.OWNER,
+        },
+      });
+
+      return user;
     });
 
     return {
-      user: this.sanitizeUser(user),
+      user: {
+        ...this.sanitizeUser(created),
+        workspaceId: created.id,
+        role: WorkspaceRole.OWNER,
+      },
       accessToken: this.signToken({
-        id: user.id,
-        email: user.email,
+        id: created.id,
+        email: created.email,
+        tokenVersion: created.tokenVersion,
+        workspaceId: created.id,
+        role: WorkspaceRole.OWNER,
       }),
     };
   }
@@ -78,13 +111,36 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    const session = await this.ensureWorkspaceForUser(user.id);
+
     return {
-      user: this.sanitizeUser(user),
+      user: {
+        ...this.sanitizeUser(user),
+        workspaceId: session.workspaceId,
+        role: session.role,
+      },
       accessToken: this.signToken({
         id: user.id,
         email: user.email,
+        tokenVersion: user.tokenVersion,
+        workspaceId: session.workspaceId,
+        role: session.role,
       }),
     };
+  }
+
+  async logout(userId: string) {
+    await this.prisma.user.update({
+      where: { id: userId },
+      data: {
+        tokenVersion: {
+          increment: 1,
+        },
+      },
+      select: { id: true },
+    });
+
+    return { success: true };
   }
 
   async me(userId: string) {
@@ -100,6 +156,7 @@ export class AuthService {
         currentPeriodEnd: true,
         createdAt: true,
         updatedAt: true,
+        workspaceId: true,
       },
     });
 
@@ -107,16 +164,119 @@ export class AuthService {
       throw new NotFoundException('User not found');
     }
 
+    const session = await this.ensureWorkspaceForUser(user.id);
+
     return {
-      ...user,
+      user: {
+        id: user.id,
+        email: user.email,
+        name: user.name,
+        workspaceId: session.workspaceId,
+        role: session.role,
+      },
       onboardingCompleted: user.onboardingCompleted,
+      plan: user.plan,
+      subscriptionStatus: user.subscriptionStatus,
+      currentPeriodEnd: user.currentPeriodEnd,
+      createdAt: user.createdAt,
+      updatedAt: user.updatedAt,
     };
   }
 
-  private signToken(payload: { id: string; email: string }) {
+  async ensureWorkspaceForUser(userId: string): Promise<{
+    workspaceId: string;
+    role: WorkspaceRole;
+  }> {
+    const user = await this.prisma.user.findUnique({
+      where: { id: userId },
+      select: {
+        id: true,
+        email: true,
+        name: true,
+        workspaceId: true,
+      },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Invalid token');
+    }
+
+    if (!user.workspaceId) {
+      await this.prisma.$transaction(async (tx) => {
+        await tx.workspace.upsert({
+          where: { id: user.id },
+          create: {
+            id: user.id,
+            ownerId: user.id,
+            name: this.getDefaultWorkspaceName(user),
+          },
+          update: {},
+        });
+
+        await tx.user.update({
+          where: { id: user.id },
+          data: { workspaceId: user.id },
+        });
+
+        await tx.workspaceMember.upsert({
+          where: {
+            workspaceId_userId: {
+              workspaceId: user.id,
+              userId: user.id,
+            },
+          },
+          create: {
+            workspaceId: user.id,
+            userId: user.id,
+            role: WorkspaceRole.OWNER,
+          },
+          update: {
+            role: WorkspaceRole.OWNER,
+          },
+        });
+      });
+    }
+
+    const workspaceId = user.workspaceId ?? user.id;
+
+    const member = await this.prisma.workspaceMember.findFirst({
+      where: {
+        workspaceId,
+        userId,
+      },
+      select: {
+        role: true,
+      },
+    });
+
+    if (member) {
+      return { workspaceId, role: member.role };
+    }
+
+    await this.prisma.workspaceMember.create({
+      data: {
+        workspaceId,
+        userId,
+        role: WorkspaceRole.OWNER,
+      },
+    });
+
+    return { workspaceId, role: WorkspaceRole.OWNER };
+  }
+
+  private signToken(payload: {
+    id: string;
+    email: string;
+    tokenVersion: number;
+    workspaceId: string;
+    role: WorkspaceRole;
+  }) {
     return this.jwtService.sign({
       sub: payload.id,
       email: payload.email,
+      tokenVersion: payload.tokenVersion,
+      workspaceId: payload.workspaceId,
+      role: payload.role,
     });
   }
 
@@ -132,5 +292,15 @@ export class AuthService {
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
     };
+  }
+
+  private getDefaultWorkspaceName(user: { name: string | null; email: string }) {
+    const trimmedName = user.name?.trim();
+    if (trimmedName) {
+      return `${trimmedName} Workspace`;
+    }
+
+    const emailAlias = user.email.split('@')[0]?.trim();
+    return emailAlias ? `${emailAlias} Workspace` : 'Workspace';
   }
 }

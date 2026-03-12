@@ -6,12 +6,12 @@ import { PrismaService } from '../prisma/prisma.service';
 export class DashboardService {
   constructor(private readonly prisma: PrismaService) {}
 
-  async getSummary(userId: string) {
+  async getSummary(workspaceId: string) {
     const [total, grouped] = await Promise.all([
-      this.prisma.quote.count({ where: { userId } }),
+      this.prisma.quote.count({ where: { workspaceId } }),
       this.prisma.quote.groupBy({
         by: ['status'],
-        where: { userId },
+        where: { workspaceId },
         _count: { status: true },
       }),
     ]);
@@ -31,7 +31,7 @@ export class DashboardService {
     return { total, byStatus };
   }
 
-  async getMetrics(userId: string, range: 'month') {
+  async getMetrics(workspaceId: string, range: 'month') {
     if (range !== 'month') {
       throw new BadRequestException('Unsupported range');
     }
@@ -42,14 +42,14 @@ export class DashboardService {
     const [totalQuotedAgg, totalAcceptedAgg] = await Promise.all([
       this.prisma.quote.aggregate({
         where: {
-          userId,
+          workspaceId,
           issuedAt: { gte: start, lte: now },
         },
         _sum: { total: true },
       }),
       this.prisma.quote.aggregate({
         where: {
-          userId,
+          workspaceId,
           status: QuoteStatus.ACCEPTED,
           issuedAt: { gte: start, lte: now },
         },
@@ -64,16 +64,15 @@ export class DashboardService {
       ? new Prisma.Decimal(totalAcceptedAgg._sum.total).toNumber()
       : 0;
 
-    const conversionRate =
-      totalQuoted > 0 ? totalAccepted / totalQuoted : 0;
+    const conversionRate = totalQuoted > 0 ? totalAccepted / totalQuoted : 0;
 
     return { range, totalQuoted, totalAccepted, conversionRate };
   }
 
-  async getRecent(userId: string, limit: number) {
+  async getRecent(workspaceId: string, limit: number) {
     const safeLimit = Math.min(Math.max(limit || 5, 1), 20);
     const items = await this.prisma.quote.findMany({
-      where: { userId },
+      where: { workspaceId },
       orderBy: { issuedAt: 'desc' },
       take: safeLimit,
       select: {
@@ -93,7 +92,7 @@ export class DashboardService {
     };
   }
 
-  async getAlerts(userId: string) {
+  async getAlerts(workspaceId: string) {
     const now = new Date();
     const expiringLimit = new Date(now);
     expiringLimit.setDate(expiringLimit.getDate() + 3);
@@ -103,13 +102,13 @@ export class DashboardService {
     const [expiringSoon, pendingOverdue] = await Promise.all([
       this.prisma.quote.count({
         where: {
-          userId,
+          workspaceId,
           validUntil: { gte: now, lte: expiringLimit },
         },
       }),
       this.prisma.quote.count({
         where: {
-          userId,
+          workspaceId,
           status: QuoteStatus.SENT,
           issuedAt: { lte: overdueLimit },
         },

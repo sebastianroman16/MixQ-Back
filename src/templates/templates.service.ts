@@ -18,7 +18,7 @@ export class TemplatesService {
     private readonly subscriptionsService: SubscriptionsService,
   ) {}
 
-  list(userId: string, type?: TemplateType) {
+  list(workspaceId: string, type?: TemplateType) {
     const where: Prisma.TemplateWhereInput = {};
 
     if (type === TemplateType.SYSTEM) {
@@ -26,11 +26,11 @@ export class TemplatesService {
       where.userId = null;
     } else if (type === TemplateType.USER) {
       where.type = TemplateType.USER;
-      where.userId = userId;
+      where.workspaceId = workspaceId;
     } else {
       where.OR = [
         { type: TemplateType.SYSTEM, userId: null },
-        { type: TemplateType.USER, userId },
+        { type: TemplateType.USER, workspaceId },
       ];
     }
 
@@ -48,9 +48,15 @@ export class TemplatesService {
     });
   }
 
-  async get(userId: string, id: string) {
-    const template = await this.prisma.template.findUnique({
-      where: { id },
+  async get(workspaceId: string, id: string) {
+    const template = await this.prisma.template.findFirst({
+      where: {
+        id,
+        OR: [
+          { type: TemplateType.SYSTEM, userId: null },
+          { type: TemplateType.USER, workspaceId },
+        ],
+      },
       include: {
         sections: {
           orderBy: { position: 'asc' },
@@ -65,20 +71,17 @@ export class TemplatesService {
       throw new NotFoundException('Template not found');
     }
 
-    if (template.type === TemplateType.USER && template.userId !== userId) {
-      throw new ForbiddenException('Access denied');
-    }
-
     return template;
   }
 
-  async create(userId: string, dto: CreateTemplateDto) {
+  async create(userId: string, workspaceId: string, dto: CreateTemplateDto) {
     await this.subscriptionsService.assertCanCreateTemplate(userId);
     this.ensureRequiredSections(dto.sections);
 
     return this.prisma.template.create({
       data: {
         userId,
+        workspaceId,
         type: TemplateType.USER,
         name: dto.name,
         isDefault: dto.isDefault ?? false,
@@ -113,10 +116,10 @@ export class TemplatesService {
     });
   }
 
-  async cloneFromSystem(userId: string, id: string) {
+  async cloneFromSystem(userId: string, workspaceId: string, id: string) {
     await this.subscriptionsService.assertCanCreateTemplate(userId);
-    const template = await this.prisma.template.findUnique({
-      where: { id },
+    const template = await this.prisma.template.findFirst({
+      where: { id, type: TemplateType.SYSTEM, userId: null },
       include: {
         sections: {
           orderBy: { position: 'asc' },
@@ -131,13 +134,10 @@ export class TemplatesService {
       throw new NotFoundException('Template not found');
     }
 
-    if (template.type !== TemplateType.SYSTEM) {
-      throw new BadRequestException('Only system templates can be cloned');
-    }
-
     return this.prisma.template.create({
       data: {
         userId,
+        workspaceId,
         type: TemplateType.USER,
         name: `${template.name} (Copy)`,
         isDefault: false,
@@ -172,21 +172,20 @@ export class TemplatesService {
     });
   }
 
-  async update(userId: string, id: string, dto: UpdateTemplateDto) {
-    const template = await this.prisma.template.findUnique({
-      where: { id },
+  async update(workspaceId: string, id: string, dto: UpdateTemplateDto) {
+    const template = await this.prisma.template.findFirst({
+      where: { id, type: TemplateType.USER, workspaceId },
     });
 
     if (!template) {
+      const systemTemplate = await this.prisma.template.findFirst({
+        where: { id, type: TemplateType.SYSTEM, userId: null },
+        select: { id: true },
+      });
+      if (systemTemplate) {
+        throw new ForbiddenException('System templates cannot be updated');
+      }
       throw new NotFoundException('Template not found');
-    }
-
-    if (template.type !== TemplateType.USER) {
-      throw new ForbiddenException('System templates cannot be updated');
-    }
-
-    if (template.userId !== userId) {
-      throw new ForbiddenException('Access denied');
     }
 
     if (dto.sections) {
@@ -251,21 +250,20 @@ export class TemplatesService {
     }
   }
 
-  async remove(userId: string, id: string) {
-    const template = await this.prisma.template.findUnique({
-      where: { id },
+  async remove(workspaceId: string, id: string) {
+    const template = await this.prisma.template.findFirst({
+      where: { id, type: TemplateType.USER, workspaceId },
     });
 
     if (!template) {
+      const systemTemplate = await this.prisma.template.findFirst({
+        where: { id, type: TemplateType.SYSTEM, userId: null },
+        select: { id: true },
+      });
+      if (systemTemplate) {
+        throw new ForbiddenException('System templates cannot be deleted');
+      }
       throw new NotFoundException('Template not found');
-    }
-
-    if (template.type !== TemplateType.USER) {
-      throw new ForbiddenException('System templates cannot be deleted');
-    }
-
-    if (template.userId !== userId) {
-      throw new ForbiddenException('Access denied');
     }
 
     return this.prisma.template.delete({ where: { id: template.id } });

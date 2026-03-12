@@ -10,6 +10,7 @@ import { QuotesModule } from './quotes/quotes.module';
 import { DashboardModule } from './dashboard/dashboard.module';
 import { SenderProfileModule } from './sender-profile/sender-profile.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
+import { WorkspaceModule } from './workspace/workspace.module';
 
 @Module({
   imports: [
@@ -24,6 +25,7 @@ import { SubscriptionsModule } from './subscriptions/subscriptions.module';
     DashboardModule,
     SenderProfileModule,
     SubscriptionsModule,
+    WorkspaceModule,
   ],
   controllers: [AppController],
   providers: [AppService],
