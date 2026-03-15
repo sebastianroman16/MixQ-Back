@@ -44,7 +44,17 @@ Variables esperadas:
 DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DB?schema=public"
 JWT_SECRET="change-me"
 JWT_EXPIRES_IN="1d"
+FRONTEND_URL="http://localhost:4200"
+RESEND_API_KEY="re_xxxxxxxxxxxxx"
+RESEND_FROM_EMAIL="no-reply@tu-dominio-verificado.com"
 ```
+
+Notas de invitaciones por email:
+
+- `RESEND_API_KEY` es obligatorio para envio real de correos.
+- `RESEND_FROM_EMAIL` debe pertenecer a un dominio verificado en Resend.
+- Si falta `RESEND_API_KEY`, la invitacion se crea igual y se devuelve `invitationUrl` como fallback.
+- El enlace apunta a `${FRONTEND_URL}/invitacion/:token`.
 
 ## Comandos utiles
 

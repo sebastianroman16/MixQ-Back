@@ -1,4 +1,5 @@
 import {
+  BadRequestException,
   ConflictException,
   Injectable,
   NotFoundException,
@@ -8,6 +9,7 @@ import { JwtService } from '@nestjs/jwt';
 import { User, WorkspaceRole } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
+import { ActivateInvitationDto } from './dto/activate-invitation.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 
@@ -111,6 +113,14 @@ export class AuthService {
       throw new UnauthorizedException('Invalid credentials');
     }
 
+    if (user.mustChangePassword) {
+      throw new UnauthorizedException({
+        code: 'PASSWORD_CHANGE_REQUIRED',
+        message:
+          'Use invitation activation flow to set a new password before login',
+      });
+    }
+
     const session = await this.ensureWorkspaceForUser(user.id);
 
     return {
@@ -141,6 +151,110 @@ export class AuthService {
     });
 
     return { success: true };
+  }
+
+  async activateInvitation(dto: ActivateInvitationDto) {
+    const normalizedEmail = dto.email.trim().toLowerCase();
+    const invitation = await this.prisma.workspaceInvitation.findUnique({
+      where: { token: dto.token },
+      include: {
+        workspace: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    if (!invitation || invitation.acceptedAt) {
+      throw new NotFoundException('Invitation not found');
+    }
+
+    if (invitation.expiresAt <= new Date()) {
+      throw new BadRequestException({ code: 'INVITATION_EXPIRED' });
+    }
+
+    if (invitation.email.toLowerCase() !== normalizedEmail) {
+      throw new UnauthorizedException('Invalid invitation credentials');
+    }
+
+    const user = await this.prisma.user.findFirst({
+      where: {
+        email: {
+          equals: normalizedEmail,
+          mode: 'insensitive',
+        },
+      },
+    });
+
+    if (!user || !user.mustChangePassword) {
+      throw new UnauthorizedException('Invalid invitation credentials');
+    }
+
+    const temporaryPasswordMatches = await bcrypt.compare(
+      dto.temporaryPassword,
+      user.passwordHash,
+    );
+    if (!temporaryPasswordMatches) {
+      throw new UnauthorizedException('Invalid invitation credentials');
+    }
+
+    const nextPasswordHash = await bcrypt.hash(dto.newPassword, 10);
+
+    await this.prisma.$transaction(async (tx) => {
+      await tx.workspaceMember.upsert({
+        where: {
+          workspaceId_userId: {
+            workspaceId: invitation.workspaceId,
+            userId: user.id,
+          },
+        },
+        create: {
+          workspaceId: invitation.workspaceId,
+          userId: user.id,
+          role: invitation.role,
+        },
+        update: {
+          role: invitation.role,
+        },
+      });
+
+      await tx.workspaceInvitation.update({
+        where: { id: invitation.id },
+        data: {
+          acceptedAt: new Date(),
+        },
+      });
+
+      await tx.user.update({
+        where: { id: user.id },
+        data: {
+          passwordHash: nextPasswordHash,
+          mustChangePassword: false,
+          workspaceId: invitation.workspaceId,
+          tokenVersion: {
+            increment: 1,
+          },
+        },
+      });
+    });
+
+    return {
+      user: {
+        ...this.sanitizeUser(user),
+        workspaceId: invitation.workspace.id,
+        role: invitation.role,
+      },
+      accessToken: this.signToken({
+        id: user.id,
+        email: user.email,
+        tokenVersion: user.tokenVersion + 1,
+        workspaceId: invitation.workspace.id,
+        role: invitation.role,
+      }),
+      workspaceName: invitation.workspace.name,
+    };
   }
 
   async me(userId: string) {

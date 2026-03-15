@@ -1,4 +1,5 @@
 import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { ActivateInvitationDto } from './dto/activate-invitation.dto';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -18,6 +19,11 @@ export class AuthController {
   @Post('login')
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
+  }
+
+  @Post('invitations/activate')
+  activateInvitation(@Body() dto: ActivateInvitationDto) {
+    return this.authService.activateInvitation(dto);
   }
 
   @Get('me')

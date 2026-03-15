@@ -62,6 +62,7 @@ model User {
   email                String             @unique
   passwordHash         String
   name                 String?
+  mustChangePassword   Boolean            @default(false)
   tokenVersion         Int                @default(0)
   onboardingCompleted  Boolean            @default(false)
   plan                 PlanType           @default(FREE)

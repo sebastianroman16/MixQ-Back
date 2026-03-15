@@ -5,7 +5,8 @@ import {
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, QuoteStatus, WorkspaceRole } from '@prisma/client';
-import { randomUUID } from 'crypto';
+import * as bcrypt from 'bcryptjs';
+import { randomBytes, randomUUID } from 'crypto';
 import { AuthUser } from '../auth/types/auth-user';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -99,6 +100,7 @@ export class WorkspaceService {
     await this.subscriptionsService.assertCanAddWorkspaceMember(user.workspaceId);
 
     const normalizedEmail = dto.email.trim().toLowerCase();
+    const normalizedName = dto.name.trim();
     const now = new Date();
     const expiresAt = new Date(now);
     expiresAt.setDate(expiresAt.getDate() + 7);
@@ -120,15 +122,61 @@ export class WorkspaceService {
       throw new BadRequestException('User is already a workspace member');
     }
 
-    const invitation = await this.prisma.workspaceInvitation.create({
-      data: {
-        workspaceId: user.workspaceId,
-        email: normalizedEmail,
-        role: dto.role,
-        invitedByUserId: user.id,
-        expiresAt,
-        token: randomUUID(),
-      },
+    const temporaryPassword = this.generateTemporaryPassword();
+    const temporaryPasswordHash = await bcrypt.hash(temporaryPassword, 10);
+
+    const { invitation } = await this.prisma.$transaction(async (tx) => {
+      const existingUser = await tx.user.findFirst({
+        where: {
+          email: {
+            equals: normalizedEmail,
+            mode: 'insensitive',
+          },
+        },
+        select: { id: true, mustChangePassword: true },
+      });
+
+      if (existingUser) {
+        if (!existingUser.mustChangePassword) {
+          throw new BadRequestException(
+            'Email already belongs to an active account',
+          );
+        }
+
+        await tx.user.update({
+          where: { id: existingUser.id },
+          data: {
+            name: normalizedName,
+            passwordHash: temporaryPasswordHash,
+            mustChangePassword: true,
+            tokenVersion: {
+              increment: 1,
+            },
+          },
+        });
+      } else {
+        await tx.user.create({
+          data: {
+            email: normalizedEmail,
+            name: normalizedName,
+            passwordHash: temporaryPasswordHash,
+            mustChangePassword: true,
+          },
+        });
+      }
+
+      const invitation = await tx.workspaceInvitation.create({
+        data: {
+          workspaceId: user.workspaceId,
+          email: normalizedEmail,
+          role: dto.role,
+          invitedByUserId: user.id,
+          expiresAt,
+          token: randomUUID(),
+        },
+      });
+
+      return { invitation };
     });
 
     const workspace = await this.prisma.workspace.findUnique({
@@ -136,18 +184,25 @@ export class WorkspaceService {
       select: { name: true },
     });
 
-    await this.invitationMailService.sendWorkspaceInvitationEmail({
+    const emailResult = await this.invitationMailService.sendWorkspaceInvitationEmail({
       to: normalizedEmail,
+      invitedUserName: normalizedName,
       workspaceName: workspace?.name ?? 'Tu equipo',
       invitedByName: user.email,
       roleLabel: dto.role,
       token: invitation.token,
+      temporaryPassword,
     });
 
     return {
       ...invitation,
       invitationUrl: this.invitationMailService.buildInvitationUrl(invitation.token),
+      emailDelivery: emailResult,
     };
+  }
+
+  private generateTemporaryPassword() {
+    return `Qm!${randomBytes(6).toString('base64url')}`;
   }
 
   async acceptInvitation(user: AuthUser, token: string) {

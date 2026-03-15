@@ -19,18 +19,33 @@ export class InvitationMailService {
     return `${base}/invitacion/${token}`;
   }
 
+  private buildMessageFromStatus(status: number): string {
+    if (status === 401 || status === 403) {
+      return 'AUTH_ERROR';
+    }
+    if (status === 422) {
+      return 'INVALID_FROM_OR_PAYLOAD';
+    }
+    if (status >= 500) {
+      return 'PROVIDER_UNAVAILABLE';
+    }
+    return 'PROVIDER_ERROR';
+  }
+
   async sendWorkspaceInvitationEmail(input: {
     to: string;
+    invitedUserName: string;
     workspaceName: string;
     invitedByName?: string | null;
     roleLabel: string;
     token: string;
-  }): Promise<void> {
+    temporaryPassword: string;
+  }): Promise<{ sent: boolean; code: 'SENT' | 'SKIPPED_NOT_CONFIGURED' | 'FAILED'; detail?: string }> {
     const invitationUrl = this.buildInvitationUrl(input.token);
 
     if (!this.resendApiKey) {
       this.logger.warn(`RESEND_API_KEY not configured. Invitation email skipped for ${input.to}. URL: ${invitationUrl}`);
-      return;
+      return { sent: false, code: 'SKIPPED_NOT_CONFIGURED' };
     }
 
     const inviter = input.invitedByName?.trim() || 'Tu equipo';
@@ -38,10 +53,13 @@ export class InvitationMailService {
     const html = `
       <div style="font-family: Arial, sans-serif; color:#0f172a; line-height:1.5;">
         <h2>Invitacion a ${input.workspaceName}</h2>
-        <p>${inviter} te invito al equipo con rol <strong>${input.roleLabel}</strong>.</p>
+        <p>Hola <strong>${input.invitedUserName}</strong>, ${inviter} te invito al equipo con rol <strong>${input.roleLabel}</strong>.</p>
+        <p>Tu acceso temporal es:</p>
+        <p><strong>Correo:</strong> ${input.to}<br/><strong>Contrasena temporal:</strong> ${input.temporaryPassword}</p>
+        <p>Al activar la invitacion deberas cambiar esta contrasena por una definitiva.</p>
         <p>
           <a href="${invitationUrl}" style="display:inline-block;padding:10px 16px;border-radius:8px;background:#2563eb;color:#fff;text-decoration:none;">
-            Aceptar invitacion
+            Activar invitacion
           </a>
         </p>
         <p>Si el boton no funciona, copia este enlace:</p>
@@ -68,12 +86,18 @@ export class InvitationMailService {
       if (!response.ok) {
         const body = await response.text().catch(() => '');
         this.logger.error(`Resend failed (${response.status}): ${body}`);
-        return;
+        return {
+          sent: false,
+          code: 'FAILED',
+          detail: this.buildMessageFromStatus(response.status),
+        };
       }
 
       this.logger.log(`Invitation email sent to ${input.to}`);
+      return { sent: true, code: 'SENT' };
     } catch (error) {
       this.logger.error(`Invitation email error for ${input.to}`, error as Error);
+      return { sent: false, code: 'FAILED', detail: 'NETWORK_OR_PROVIDER_ERROR' };
     }
   }
 }
