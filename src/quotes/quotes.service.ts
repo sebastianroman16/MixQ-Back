@@ -10,6 +10,7 @@ import puppeteer from 'puppeteer';
 import { PrismaService } from '../prisma/prisma.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateQuoteDto } from './dto/create-quote.dto';
+import { CreateQuoteFolderDto } from './dto/create-quote-folder.dto';
 import { UpdateQuoteDto } from './dto/update-quote.dto';
 import { renderQuotePdfHtml } from './pdf/quote-pdf.template';
 import {
@@ -18,20 +19,15 @@ import {
 } from './utils/quote-totals';
 
 const QUOTE_STATUS_TRANSITIONS: Record<QuoteStatus, QuoteStatus[]> = {
-  [QuoteStatus.DRAFT]: [QuoteStatus.SENT, QuoteStatus.CANCELLED],
-  [QuoteStatus.SENT]: [
-    QuoteStatus.VIEWED,
+  [QuoteStatus.DRAFT]: [
+    QuoteStatus.SENT,
     QuoteStatus.ACCEPTED,
-    QuoteStatus.REJECTED,
     QuoteStatus.CANCELLED,
   ],
-  [QuoteStatus.VIEWED]: [
-    QuoteStatus.ACCEPTED,
-    QuoteStatus.REJECTED,
-    QuoteStatus.CANCELLED,
-  ],
+  [QuoteStatus.SENT]: [QuoteStatus.ACCEPTED, QuoteStatus.CANCELLED],
+  [QuoteStatus.VIEWED]: [QuoteStatus.ACCEPTED, QuoteStatus.CANCELLED],
   [QuoteStatus.ACCEPTED]: [],
-  [QuoteStatus.REJECTED]: [],
+  [QuoteStatus.REJECTED]: [QuoteStatus.ACCEPTED, QuoteStatus.CANCELLED],
   [QuoteStatus.CANCELLED]: [],
 };
 
@@ -46,6 +42,87 @@ export class QuotesService {
     return this.prisma.quote.findMany({
       where: { workspaceId },
       orderBy: { createdAt: 'desc' },
+      include: {
+        items: { orderBy: { position: 'asc' } },
+      },
+    });
+  }
+
+  listFolders(workspaceId: string) {
+    return (this.prisma as any).quoteFolder.findMany({
+      where: { workspaceId, isArchived: false },
+      orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+    });
+  }
+
+  async createFolder(
+    userId: string,
+    workspaceId: string,
+    dto: CreateQuoteFolderDto,
+  ) {
+    const name = dto.name.trim();
+
+    if (!name) {
+      throw new BadRequestException('El nombre de la carpeta es obligatorio.');
+    }
+
+    const existing = await (this.prisma as any).quoteFolder.findFirst({
+      where: {
+        workspaceId,
+        name: { equals: name, mode: 'insensitive' },
+      },
+      select: { id: true },
+    });
+
+    if (existing) {
+      throw new ConflictException('Ya existe una carpeta con ese nombre.');
+    }
+
+    try {
+      return await (this.prisma as any).quoteFolder.create({
+        data: {
+          workspaceId,
+          name,
+          description: dto.description?.trim() || null,
+          createdByUserId: userId,
+        },
+      });
+    } catch (error) {
+      if (this.isWorkspaceFolderNameConflict(error)) {
+        throw new ConflictException('Ya existe una carpeta con ese nombre.');
+      }
+
+      throw error;
+    }
+  }
+
+  async removeFolder(workspaceId: string, folderId: string) {
+    await this.assertFolderOwnership(workspaceId, folderId);
+
+    await (this.prisma as any).quoteFolder.delete({
+      where: { id: folderId },
+    });
+
+    return { success: true };
+  }
+
+  async assignFolder(workspaceId: string, id: string, folderId: string | null) {
+    const quote = await this.prisma.quote.findFirst({
+      where: { id, workspaceId },
+      select: { id: true },
+    });
+
+    if (!quote) {
+      throw new NotFoundException('Quote not found');
+    }
+
+    if (folderId) {
+      await this.assertFolderOwnership(workspaceId, folderId);
+    }
+
+    return this.prisma.quote.update({
+      where: { id },
+      data: { folderId } as any,
       include: {
         items: { orderBy: { position: 'asc' } },
       },
@@ -75,25 +152,27 @@ export class QuotesService {
 
   async create(userId: string, workspaceId: string, dto: CreateQuoteDto) {
     await this.subscriptionsService.assertCanCreateQuote(userId);
-    const template = await this.prisma.template.findFirst({
-      where: {
-        id: dto.templateId,
-        OR: [
-          { type: TemplateType.SYSTEM, userId: null },
-          { type: TemplateType.USER, workspaceId },
-        ],
-      },
-      include: {
-        sections: {
-          orderBy: { position: 'asc' },
-          include: {
-            items: { orderBy: { position: 'asc' } },
+    const template = dto.templateId
+      ? await this.prisma.template.findFirst({
+          where: {
+            id: dto.templateId,
+            OR: [
+              { type: TemplateType.SYSTEM, userId: null },
+              { type: TemplateType.USER, workspaceId },
+            ],
           },
-        },
-      },
-    });
+          include: {
+            sections: {
+              orderBy: { position: 'asc' },
+              include: {
+                items: { orderBy: { position: 'asc' } },
+              },
+            },
+          },
+        })
+      : null;
 
-    if (!template) {
+    if (dto.templateId && !template) {
       throw new NotFoundException('Template not found');
     }
 
@@ -121,7 +200,8 @@ export class QuotesService {
       data: {
         userId,
         workspaceId,
-        templateId: template.id,
+        templateId: template?.id ?? null,
+        folderId: null,
         status: QuoteStatus.DRAFT,
         quoteNumber: dto.quoteNumber,
         title: dto.title,
@@ -151,21 +231,23 @@ export class QuotesService {
             changedAt: now,
           },
         },
-        sections: {
-          create: template.sections.map((section) => ({
-            title: section.title,
-            type: section.type,
-            position: section.position,
-            items: {
-              create: section.items.map((item) => ({
-                label: item.label,
-                value: item.value,
-                type: item.type,
-                position: item.position,
+        sections: template
+          ? {
+              create: template.sections.map((section) => ({
+                title: section.title,
+                type: section.type,
+                position: section.position,
+                items: {
+                  create: section.items.map((item) => ({
+                    label: item.label,
+                    value: item.value,
+                    type: item.type,
+                    position: item.position,
+                  })),
+                },
               })),
-            },
-          })),
-        },
+            }
+          : undefined,
         items: {
           create: dto.items.map((item, index) => ({
             title: item.title,
@@ -177,7 +259,7 @@ export class QuotesService {
             serviceId: item.serviceId,
           })),
         },
-      },
+      } as any,
       include: {
         sections: {
           orderBy: { position: 'asc' },
@@ -394,6 +476,7 @@ export class QuotesService {
             userId,
             workspaceId,
             templateId: source.templateId,
+            folderId: (source as any).folderId ?? null,
             status: QuoteStatus.DRAFT,
             quoteNumber: nextQuoteNumber,
             title: source.title,
@@ -454,7 +537,7 @@ export class QuotesService {
                 serviceId: item.serviceId,
               })),
             },
-          },
+          } as any,
           include: {
             sections: {
               orderBy: { position: 'asc' },
@@ -654,6 +737,17 @@ export class QuotesService {
     return Number.isFinite(parsed) ? parsed : null;
   }
 
+  private async assertFolderOwnership(workspaceId: string, folderId: string) {
+    const folder = await (this.prisma as any).quoteFolder.findFirst({
+      where: { id: folderId, workspaceId, isArchived: false },
+      select: { id: true },
+    });
+
+    if (!folder) {
+      throw new NotFoundException('Carpeta no encontrada.');
+    }
+  }
+
   private isQuoteNumberConflict(error: unknown): boolean {
     if (!error || typeof error !== 'object') {
       return false;
@@ -670,5 +764,21 @@ export class QuotesService {
     }
 
     return target.includes('workspaceId') && target.includes('quoteNumber');
+  }
+
+  private isWorkspaceFolderNameConflict(error: unknown): boolean {
+    if (!(error instanceof Prisma.PrismaClientKnownRequestError)) {
+      return false;
+    }
+
+    if (error.code !== 'P2002') {
+      return false;
+    }
+
+    const target = Array.isArray(error.meta?.target)
+      ? error.meta.target.map((value) => String(value))
+      : [];
+
+    return target.includes('workspaceId') && target.includes('name');
   }
 }

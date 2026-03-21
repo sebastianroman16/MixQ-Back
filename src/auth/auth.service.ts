@@ -153,6 +153,50 @@ export class AuthService {
     return { success: true };
   }
 
+  async getInvitationSummary(token: string) {
+    const invitation = await this.prisma.workspaceInvitation.findUnique({
+      where: { token },
+      include: {
+        workspace: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+        invitedBy: {
+          select: {
+            id: true,
+            name: true,
+            email: true,
+          },
+        },
+      },
+    });
+
+    if (!invitation) {
+      throw new NotFoundException('Invitation not found');
+    }
+
+    const status =
+      invitation.acceptedAt
+        ? 'ACCEPTED'
+        : invitation.expiresAt <= new Date()
+          ? 'EXPIRED'
+          : 'PENDING';
+
+    return {
+      token: invitation.token,
+      workspaceName: invitation.workspace.name,
+      workspaceId: invitation.workspace.id,
+      invitedEmail: invitation.email,
+      role: invitation.role,
+      invitedByName: invitation.invitedBy?.name ?? null,
+      invitedByEmail: invitation.invitedBy?.email ?? null,
+      expiresAt: invitation.expiresAt,
+      status,
+    };
+  }
+
   async activateInvitation(dto: ActivateInvitationDto) {
     const normalizedEmail = dto.email.trim().toLowerCase();
     const invitation = await this.prisma.workspaceInvitation.findUnique({

@@ -82,6 +82,7 @@ model User {
   categories    Category[]
   templates     Template[]
   quotes        Quote[]
+  createdQuoteFolders QuoteFolder[]   @relation("QuoteFolderCreatedBy")
 
   @@index([workspaceId])
 }
@@ -103,6 +104,7 @@ model Workspace {
   categories     Category[]
   templates      Template[]
   quotes         Quote[]
+  quoteFolders   QuoteFolder[]
 
   @@index([ownerId])
 }
@@ -257,10 +259,33 @@ model TemplateItem {
   @@index([sectionId])
 }
 
+model QuoteFolder {
+  id              String    @id @default(uuid())
+  workspaceId     String
+  name            String
+  description     String?
+  color           String?
+  icon            String?
+  position        Int?
+  isArchived      Boolean   @default(false)
+  createdByUserId String?
+  createdAt       DateTime  @default(now())
+  updatedAt       DateTime  @updatedAt
+
+  workspace       Workspace @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  createdBy       User?     @relation("QuoteFolderCreatedBy", fields: [createdByUserId], references: [id], onDelete: SetNull)
+  quotes          Quote[]
+
+  @@unique([workspaceId, name])
+  @@index([workspaceId])
+  @@index([createdByUserId])
+}
+
 model Quote {
   id                    String      @id @default(uuid())
   userId                String
   workspaceId           String?
+  folderId              String?
   templateId            String?
   status                QuoteStatus @default(DRAFT)
   quoteNumber           String
@@ -292,6 +317,7 @@ model Quote {
 
   user          User               @relation(fields: [userId], references: [id], onDelete: Cascade)
   workspace     Workspace?         @relation(fields: [workspaceId], references: [id], onDelete: Cascade)
+  folder        QuoteFolder?       @relation(fields: [folderId], references: [id], onDelete: SetNull)
   template      Template?          @relation(fields: [templateId], references: [id], onDelete: SetNull)
   sections      QuoteSection[]
   items         QuoteItem[]
@@ -299,6 +325,7 @@ model Quote {
 
   @@index([userId])
   @@index([workspaceId])
+  @@index([folderId])
   @@unique([userId, quoteNumber])
   @@unique([workspaceId, quoteNumber])
   @@index([templateId])

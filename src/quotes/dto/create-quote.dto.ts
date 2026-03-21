@@ -16,8 +16,9 @@ import { CreateQuoteItemDto } from './create-quote-item.dto';
 import { IsLogoUrl } from '../../common/validators/logo-url.validator';
 
 export class CreateQuoteDto {
+  @IsOptional()
   @IsUUID()
-  templateId: string;
+  templateId?: string;
 
   @IsString()
   quoteNumber: string;

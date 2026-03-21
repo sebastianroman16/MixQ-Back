@@ -1,4 +1,4 @@
-import { Body, Controller, Get, Post, UseGuards } from '@nestjs/common';
+import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { ActivateInvitationDto } from './dto/activate-invitation.dto';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
@@ -24,6 +24,11 @@ export class AuthController {
   @Post('invitations/activate')
   activateInvitation(@Body() dto: ActivateInvitationDto) {
     return this.authService.activateInvitation(dto);
+  }
+
+  @Get('invitations/:token/summary')
+  invitationSummary(@Param('token') token: string) {
+    return this.authService.getInvitationSummary(token);
   }
 
   @Get('me')

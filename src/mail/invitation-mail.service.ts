@@ -12,11 +12,27 @@ export class InvitationMailService {
     this.resendApiKey = this.configService.get<string>('RESEND_API_KEY', '');
     this.resendFrom = this.configService.get<string>('RESEND_FROM_EMAIL', 'no-reply@mixq.app');
     this.frontendBaseUrl = this.configService.get<string>('FRONTEND_URL', 'http://localhost:4200');
+
+    this.logger.log(
+      `Mail config loaded | apiKey=${this.maskApiKey(this.resendApiKey)} | from=${this.resendFrom} | frontend=${this.frontendBaseUrl}`,
+    );
   }
 
   buildInvitationUrl(token: string): string {
     const base = this.frontendBaseUrl.replace(/\/+$/, '');
     return `${base}/invitacion/${token}`;
+  }
+
+  private maskApiKey(value: string): string {
+    if (!value) {
+      return 'missing';
+    }
+
+    if (value.length <= 8) {
+      return `${value.slice(0, 2)}***`;
+    }
+
+    return `${value.slice(0, 4)}...${value.slice(-4)}`;
   }
 
   private buildMessageFromStatus(status: number): string {
@@ -67,6 +83,10 @@ export class InvitationMailService {
         <p style="font-size:12px;color:#64748b;">Este enlace puede expirar en 7 dias.</p>
       </div>
     `;
+
+    this.logger.log(
+      `Sending workspace invitation email to ${input.to} using from=${this.resendFrom} and apiKey=${this.maskApiKey(this.resendApiKey)}`,
+    );
 
     try {
       const response = await fetch('https://api.resend.com/emails', {

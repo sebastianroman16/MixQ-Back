@@ -12,7 +12,6 @@ import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateWorkspaceInvitationDto } from './dto/create-workspace-invitation.dto';
 import { UpdateWorkspaceMemberRoleDto } from './dto/update-workspace-member-role.dto';
-import { InvitationMailService } from '../mail/invitation-mail.service';
 
 type MetricsRange = 'month' | 'quarter' | 'year';
 
@@ -21,7 +20,6 @@ export class WorkspaceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly subscriptionsService: SubscriptionsService,
-    private readonly invitationMailService: InvitationMailService,
   ) {}
 
   async getMe(user: AuthUser) {
@@ -179,30 +177,21 @@ export class WorkspaceService {
       return { invitation };
     });
 
-    const workspace = await this.prisma.workspace.findUnique({
-      where: { id: user.workspaceId },
-      select: { name: true },
-    });
-
-    const emailResult = await this.invitationMailService.sendWorkspaceInvitationEmail({
-      to: normalizedEmail,
-      invitedUserName: normalizedName,
-      workspaceName: workspace?.name ?? 'Tu equipo',
-      invitedByName: user.email,
-      roleLabel: dto.role,
-      token: invitation.token,
-      temporaryPassword,
-    });
-
     return {
       ...invitation,
-      invitationUrl: this.invitationMailService.buildInvitationUrl(invitation.token),
-      emailDelivery: emailResult,
+      invitationUrl: this.buildInvitationUrl(invitation.token),
+      temporaryPassword,
     };
   }
 
   private generateTemporaryPassword() {
     return `Qm!${randomBytes(6).toString('base64url')}`;
+  }
+
+  private buildInvitationUrl(token: string) {
+    const frontendBaseUrl =
+      process.env.FRONTEND_URL?.replace(/\/+$/, '') ?? 'http://localhost:4200';
+    return `${frontendBaseUrl}/invitacion/${token}`;
   }
 
   async acceptInvitation(user: AuthUser, token: string) {

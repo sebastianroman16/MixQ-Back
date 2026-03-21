@@ -19,7 +19,9 @@ import { WorkspaceRoleGuard } from '../auth/guards/workspace-role.guard';
 import type { AuthUser } from '../auth/types/auth-user';
 import { WORKSPACE_CAPABILITY_ROLES } from '../workspace/workspace-capabilities';
 import { CreateQuoteDto } from './dto/create-quote.dto';
+import { CreateQuoteFolderDto } from './dto/create-quote-folder.dto';
 import { ChangeQuoteStatusDto } from './dto/change-quote-status.dto';
+import { AssignQuoteFolderDto } from './dto/assign-quote-folder.dto';
 import { UpdateQuoteDto } from './dto/update-quote.dto';
 import { QuotesService } from './quotes.service';
 
@@ -37,6 +39,26 @@ export class QuotesController {
   @Get()
   list(@CurrentUser() user: AuthUser) {
     return this.quotesService.list(user.workspaceId);
+  }
+
+  @Get('folders')
+  listFolders(@CurrentUser() user: AuthUser) {
+    return this.quotesService.listFolders(user.workspaceId);
+  }
+
+  @Post('folders')
+  @RequireWorkspaceRoles(...WORKSPACE_CAPABILITY_ROLES.editQuotes)
+  createFolder(@CurrentUser() user: AuthUser, @Body() dto: CreateQuoteFolderDto) {
+    return this.quotesService.createFolder(user.id, user.workspaceId, dto);
+  }
+
+  @Delete('folders/:folderId')
+  @RequireWorkspaceRoles(...WORKSPACE_CAPABILITY_ROLES.editQuotes)
+  removeFolder(
+    @CurrentUser() user: AuthUser,
+    @Param('folderId', ParseUUIDPipe) folderId: string,
+  ) {
+    return this.quotesService.removeFolder(user.workspaceId, folderId);
   }
 
   @Get(':id/pdf')
@@ -79,6 +101,16 @@ export class QuotesController {
     @Body() dto: ChangeQuoteStatusDto,
   ) {
     return this.quotesService.changeStatus(user.id, user.workspaceId, id, dto.status);
+  }
+
+  @Patch(':id/folder')
+  @RequireWorkspaceRoles(...WORKSPACE_CAPABILITY_ROLES.editQuotes)
+  assignFolder(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AssignQuoteFolderDto,
+  ) {
+    return this.quotesService.assignFolder(user.workspaceId, id, dto.folderId ?? null);
   }
 
   @Post(':id/duplicate')
