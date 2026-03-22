@@ -362,7 +362,7 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
       .preview__table-head {
         display: grid;
         grid-template-columns: 1.4fr 2fr 0.6fr 0.8fr 0.8fr;
-        gap: 0.3rem;
+        gap: 0;
         padding: 0.3rem 0.5rem;
         font-size: 0.57rem;
         font-weight: 600;
@@ -371,14 +371,28 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
         background: ${escapeHtml(themeHeaderBg)};
         color: ${escapeHtml(themeHeaderText)};
       }
+      .preview__table-head > * {
+        padding: 0 0.2rem;
+      }
+      .preview__table-head > * + * {
+        border-left: 1px solid rgba(255, 255, 255, 0.18);
+        padding-left: 0.38rem;
+      }
       .preview__table-row {
         display: grid;
         grid-template-columns: 1.4fr 2fr 0.6fr 0.8fr 0.8fr;
-        gap: 0.3rem;
+        gap: 0;
         border-top: 1px solid ${escapeHtml(themeBorder)};
         padding: 0.33rem 0.5rem;
         font-size: 0.66rem;
         line-height: 1.2;
+      }
+      .preview__table-row > * {
+        padding: 0 0.2rem;
+      }
+      .preview__table-row > * + * {
+        border-left: 1px solid ${escapeHtml(themeBorder)};
+        padding-left: 0.38rem;
       }
       .preview__table-title { font-weight: 600; color: ${escapeHtml(themeText)}; }
       .preview__table-desc { font-size: 0.6rem; color: ${escapeHtml(themeMuted)}; line-height: 1.2; margin-top: 0.05rem; }
