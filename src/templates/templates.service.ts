@@ -37,13 +37,16 @@ export class TemplatesService {
     return this.prisma.template.findMany({
       where,
       orderBy: { createdAt: 'desc' },
-      include: {
-        sections: {
-          orderBy: { position: 'asc' },
-          include: {
-            items: { orderBy: { position: 'asc' } },
-          },
-        },
+      select: {
+        id: true,
+        userId: true,
+        type: true,
+        name: true,
+        isDefault: true,
+        isActive: true,
+        theme: true,
+        createdAt: true,
+        updatedAt: true,
       },
     });
   }

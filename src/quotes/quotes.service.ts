@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, QuoteStatus, TemplateType } from '@prisma/client';
+import { PaymentStatus, Prisma, QuoteStatus, TemplateType } from '@prisma/client';
 import puppeteer from 'puppeteer';
 import { PrismaService } from '../prisma/prisma.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
@@ -38,14 +38,54 @@ export class QuotesService {
     private readonly subscriptionsService: SubscriptionsService,
   ) {}
 
-  list(workspaceId: string) {
-    return this.prisma.quote.findMany({
+  async list(workspaceId: string) {
+    const quotes = await this.prisma.quote.findMany({
       where: { workspaceId },
       orderBy: { createdAt: 'desc' },
-      include: {
-        items: { orderBy: { position: 'asc' } },
+      select: {
+        id: true,
+        folderId: true,
+        templateId: true,
+        quoteNumber: true,
+        title: true,
+        clientData: true,
+        total: true,
+        issuedAt: true,
+        validUntil: true,
+        sentAt: true,
+        viewedAt: true,
+        acceptedAt: true,
+        rejectedAt: true,
+        cancelledAt: true,
+        status: true,
+        paymentStatus: true,
+        _count: {
+          select: {
+            items: true,
+          },
+        },
       },
     });
+
+    return quotes.map((quote) => ({
+      id: quote.id,
+      folderId: quote.folderId ?? null,
+      templateId: quote.templateId ?? null,
+      quoteNumber: this.normalizeQuoteNumber(quote.quoteNumber),
+      title: quote.title,
+      clientData: this.toSummaryClientData(quote.clientData),
+      total: new Prisma.Decimal(quote.total).toNumber(),
+      issuedAt: quote.issuedAt.toISOString().slice(0, 10),
+      validUntil: quote.validUntil.toISOString().slice(0, 10),
+      sentAt: quote.sentAt?.toISOString() ?? null,
+      viewedAt: quote.viewedAt?.toISOString() ?? null,
+      acceptedAt: quote.acceptedAt?.toISOString() ?? null,
+      rejectedAt: quote.rejectedAt?.toISOString() ?? null,
+      cancelledAt: quote.cancelledAt?.toISOString() ?? null,
+      status: quote.status,
+      paymentStatus: quote.paymentStatus,
+      itemsCount: quote._count.items,
+    }));
   }
 
   listFolders(workspaceId: string) {
@@ -147,7 +187,7 @@ export class QuotesService {
       throw new NotFoundException('Quote not found');
     }
 
-    return quote;
+    return this.normalizeQuoteResponse(quote);
   }
 
   async create(userId: string, workspaceId: string, dto: CreateQuoteDto) {
@@ -203,7 +243,8 @@ export class QuotesService {
         templateId: template?.id ?? null,
         folderId: null,
         status: QuoteStatus.DRAFT,
-        quoteNumber: dto.quoteNumber,
+        paymentStatus: dto.paymentStatus ?? PaymentStatus.PENDING,
+        quoteNumber: this.normalizeQuoteNumber(dto.quoteNumber),
         title: dto.title,
         subtitle: dto.subtitle,
         description: dto.description,
@@ -334,7 +375,8 @@ export class QuotesService {
           userId,
           workspaceId,
           status: nextStatus,
-          quoteNumber: dto.quoteNumber,
+          paymentStatus: dto.paymentStatus,
+          quoteNumber: dto.quoteNumber ? this.normalizeQuoteNumber(dto.quoteNumber) : undefined,
           title: dto.title,
           subtitle: dto.subtitle,
           description: dto.description,
@@ -478,6 +520,7 @@ export class QuotesService {
             templateId: source.templateId,
             folderId: (source as any).folderId ?? null,
             status: QuoteStatus.DRAFT,
+            paymentStatus: source.paymentStatus ?? PaymentStatus.PENDING,
             quoteNumber: nextQuoteNumber,
             title: source.title,
             subtitle: source.subtitle,
@@ -764,6 +807,41 @@ export class QuotesService {
     }
 
     return target.includes('workspaceId') && target.includes('quoteNumber');
+  }
+
+  private normalizeQuoteResponse<T extends { quoteNumber: string }>(quote: T): T {
+    return {
+      ...quote,
+      quoteNumber: this.normalizeQuoteNumber(quote.quoteNumber),
+    };
+  }
+
+  private toSummaryClientData(value: Prisma.JsonValue) {
+    const clientData =
+      value && typeof value === 'object' && !Array.isArray(value)
+        ? (value as Record<string, unknown>)
+        : {};
+
+    return {
+      name: typeof clientData.name === 'string' ? clientData.name : '',
+      rut: typeof clientData.rut === 'string' ? clientData.rut : '',
+      email: typeof clientData.email === 'string' ? clientData.email : '',
+    };
+  }
+
+  private normalizeQuoteNumber(value: unknown): string {
+    const raw = String(value ?? "").trim();
+    if (!raw) {
+      return "";
+    }
+
+    const digits = raw.replace(/\D/g, "");
+    if (!digits) {
+      return raw;
+    }
+
+    const normalized = String(Number(digits));
+    return normalized === "NaN" ? raw : normalized;
   }
 
   private isWorkspaceFolderNameConflict(error: unknown): boolean {

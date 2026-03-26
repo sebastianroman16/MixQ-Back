@@ -69,14 +69,13 @@ export class WorkspaceController {
     return this.workspaceService.removeMember(user, memberId);
   }
 
-  @Get('members/:userId/metrics')
+  @Get('members/metrics')
   @RequireWorkspaceRoles(WorkspaceRole.OWNER, WorkspaceRole.ADMIN)
-  getMemberMetrics(
+  getMembersMetrics(
     @CurrentUser() user: AuthUser,
-    @Param('userId', ParseUUIDPipe) memberUserId: string,
     @Query('range') range?: 'month' | 'quarter' | 'year',
   ) {
-    return this.workspaceService.getMemberMetrics(user, memberUserId, range ?? 'month');
+    return this.workspaceService.getMembersMetrics(user, range ?? 'month');
   }
 
   @Get('metrics/advanced')

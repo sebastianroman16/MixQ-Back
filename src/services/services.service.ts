@@ -11,6 +11,11 @@ import { CreateServiceDto } from './dto/create-service.dto';
 import { UpdateCategoryDto } from './dto/update-category.dto';
 import { UpdateServiceDto } from './dto/update-service.dto';
 
+interface ServiceFilters {
+  categoryId?: string;
+  search?: string;
+}
+
 @Injectable()
 export class ServicesService {
   constructor(
@@ -51,9 +56,41 @@ export class ServicesService {
     }
   }
 
-  findAll(workspaceId: string) {
+  findAll(workspaceId: string, filters: ServiceFilters = {}) {
+    const categoryId = filters.categoryId?.trim();
+    const search = filters.search?.trim();
+
     return this.prisma.service.findMany({
-      where: { workspaceId },
+      where: {
+        workspaceId,
+        ...(categoryId ? { categoryId } : {}),
+        ...(search
+          ? {
+              OR: [
+                {
+                  name: {
+                    contains: search,
+                    mode: 'insensitive',
+                  },
+                },
+                {
+                  inventoryCode: {
+                    contains: search,
+                    mode: 'insensitive',
+                  },
+                },
+                {
+                  category: {
+                    name: {
+                      contains: search,
+                      mode: 'insensitive',
+                    },
+                  },
+                },
+              ],
+            }
+          : {}),
+      },
       orderBy: { createdAt: 'desc' },
       include: { category: true },
     });

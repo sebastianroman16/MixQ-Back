@@ -7,6 +7,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
@@ -33,8 +34,12 @@ export class ServicesController {
   }
 
   @Get()
-  findAll(@CurrentUser() user: AuthUser) {
-    return this.servicesService.findAll(user.workspaceId);
+  findAll(
+    @CurrentUser() user: AuthUser,
+    @Query('categoryId') categoryId?: string,
+    @Query('search') search?: string,
+  ) {
+    return this.servicesService.findAll(user.workspaceId, { categoryId, search });
   }
 
   @Post('categories')

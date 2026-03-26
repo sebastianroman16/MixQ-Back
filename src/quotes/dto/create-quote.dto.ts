@@ -2,6 +2,7 @@ import {
   ArrayMinSize,
   IsArray,
   IsDateString,
+  IsEnum,
   IsInt,
   IsNumber,
   IsObject,
@@ -12,6 +13,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { PaymentStatus } from '@prisma/client';
 import { CreateQuoteItemDto } from './create-quote-item.dto';
 import { IsLogoUrl } from '../../common/validators/logo-url.validator';
 
@@ -78,4 +80,8 @@ export class CreateQuoteDto {
 
   @IsDateString()
   validUntil: string;
+
+  @IsOptional()
+  @IsEnum(PaymentStatus)
+  paymentStatus?: PaymentStatus;
 }

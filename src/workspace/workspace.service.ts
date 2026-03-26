@@ -327,14 +327,11 @@ export class WorkspaceService {
     return this.prisma.workspaceMember.delete({ where: { id: member.id } });
   }
 
-  async getMemberMetrics(user: AuthUser, memberUserId: string, range: MetricsRange = 'month') {
+  async getMembersMetrics(user: AuthUser, range: MetricsRange = 'month') {
     this.assertManagerRole(user.role);
 
-    const member = await this.prisma.workspaceMember.findFirst({
-      where: {
-        workspaceId: user.workspaceId,
-        userId: memberUserId,
-      },
+    const members = await this.prisma.workspaceMember.findMany({
+      where: { workspaceId: user.workspaceId },
       include: {
         user: {
           select: {
@@ -344,12 +341,14 @@ export class WorkspaceService {
           },
         },
       },
+      orderBy: { createdAt: 'asc' },
     });
 
-    if (!member) {
-      throw new NotFoundException('Member not found');
+    if (!members.length) {
+      return { items: [] };
     }
 
+    const memberUserIds = members.map((member) => member.userId);
     const now = new Date();
     const start = this.getRangeStart(range, now);
     const staleDraftDate = new Date(now);
@@ -357,62 +356,98 @@ export class WorkspaceService {
 
     const baseWhere = {
       workspaceId: user.workspaceId,
-      userId: memberUserId,
+      userId: { in: memberUserIds },
       issuedAt: {
         gte: start,
         lte: now,
       },
     };
 
-    const [created, accepted, rejected, cancelled, staleDraft, pendingAfterSend] = await Promise.all([
-      this.prisma.quote.count({ where: baseWhere }),
-      this.prisma.quote.count({ where: { ...baseWhere, status: QuoteStatus.ACCEPTED } }),
-      this.prisma.quote.count({ where: { ...baseWhere, status: QuoteStatus.REJECTED } }),
-      this.prisma.quote.count({ where: { ...baseWhere, status: QuoteStatus.CANCELLED } }),
-      this.prisma.quote.count({
+    const [createdCounts, statusCounts, staleDraftCounts, pendingAfterSendCounts] = await Promise.all([
+      this.prisma.quote.groupBy({
+        by: ['userId'],
+        where: baseWhere,
+        _count: { userId: true },
+      }),
+      this.prisma.quote.groupBy({
+        by: ['userId', 'status'],
+        where: baseWhere,
+        _count: { status: true },
+      }),
+      this.prisma.quote.groupBy({
+        by: ['userId'],
         where: {
           ...baseWhere,
           status: QuoteStatus.DRAFT,
           createdAt: { lte: staleDraftDate },
         },
+        _count: { userId: true },
       }),
-      this.prisma.quote.count({
+      this.prisma.quote.groupBy({
+        by: ['userId'],
         where: {
           ...baseWhere,
           status: { in: [QuoteStatus.SENT, QuoteStatus.VIEWED] },
           validUntil: { lt: now },
         },
+        _count: { userId: true },
       }),
     ]);
 
-    const noOutcome = cancelled + staleDraft + pendingAfterSend;
+    const createdByUserId = new Map(
+      createdCounts.map((entry) => [entry.userId, entry._count.userId]),
+    );
+    const statusByUserIdAndStatus = new Map(
+      statusCounts.map((entry) => [
+        `${entry.userId}:${entry.status}`,
+        entry._count.status,
+      ]),
+    );
+    const staleDraftByUserId = new Map(
+      staleDraftCounts.map((entry) => [entry.userId, entry._count.userId]),
+    );
+    const pendingAfterSendByUserId = new Map(
+      pendingAfterSendCounts.map((entry) => [entry.userId, entry._count.userId]),
+    );
 
     return {
-      member: {
-        userId: member.user.id,
-        name: member.user.name,
-        email: member.user.email,
-        role: member.role,
-      },
-      range,
-      from: start.toISOString(),
-      to: now.toISOString(),
-      totals: {
-        created,
-        accepted,
-        rejected,
-        noOutcome,
-      },
-      breakdown: {
-        cancelled,
-        staleDraft,
-        pendingAfterSend,
-      },
-      rates: {
-        acceptedRate: created > 0 ? accepted / created : 0,
-        rejectedRate: created > 0 ? rejected / created : 0,
-        noOutcomeRate: created > 0 ? noOutcome / created : 0,
-      },
+      items: members.map((member) => {
+        const created = createdByUserId.get(member.userId) ?? 0;
+        const accepted = statusByUserIdAndStatus.get(`${member.userId}:${QuoteStatus.ACCEPTED}`) ?? 0;
+        const rejected = statusByUserIdAndStatus.get(`${member.userId}:${QuoteStatus.REJECTED}`) ?? 0;
+        const cancelled = statusByUserIdAndStatus.get(`${member.userId}:${QuoteStatus.CANCELLED}`) ?? 0;
+        const staleDraft = staleDraftByUserId.get(member.userId) ?? 0;
+        const pendingAfterSend = pendingAfterSendByUserId.get(member.userId) ?? 0;
+        const noOutcome = cancelled + staleDraft + pendingAfterSend;
+
+        return {
+          member: {
+            userId: member.user.id,
+            name: member.user.name,
+            email: member.user.email,
+            role: member.role,
+          },
+          range,
+          from: start.toISOString(),
+          to: now.toISOString(),
+          totals: {
+            created,
+            accepted,
+            rejected,
+            noOutcome,
+          },
+          breakdown: {
+            cancelled,
+            staleDraft,
+            pendingAfterSend,
+          },
+          rates: {
+            acceptedRate: created > 0 ? accepted / created : 0,
+            rejectedRate: created > 0 ? rejected / created : 0,
+            noOutcomeRate: created > 0 ? noOutcome / created : 0,
+          },
+        };
+      }),
     };
   }
 

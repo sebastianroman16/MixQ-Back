@@ -32,6 +32,7 @@ type QuotePdfData = {
   eventData: Prisma.JsonValue | null;
   paymentData: Prisma.JsonValue | null;
   contactData: Prisma.JsonValue | null;
+  senderProfileSnapshot?: Prisma.JsonValue | null;
   items: QuotePdfItem[];
   logoUrl: string | null;
   sections?: QuotePdfSection[];
@@ -195,14 +196,12 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
   const event = asRecord(quote.eventData);
   const payment = asRecord(quote.paymentData);
   const contact = asRecord(quote.contactData);
+  const sender = asRecord(quote.senderProfileSnapshot ?? null);
   const issuedAt = formatDate(quote.issuedAt);
   const validUntil = formatDate(quote.validUntil);
   const eventDate = valueOrDash(event.date);
   const templateName = quote.templateName ?? '';
-  const headerAddress =
-    getSectionValue(quote.sections, 'HEADER', 'Direccion') ||
-    client.address ||
-    '';
+  const headerAddress = sender.address || '';
   const quoteNumber =
     quote.quoteNumber ||
     getSectionValue(quote.sections, 'HEADER', 'Numero') ||
@@ -223,8 +222,10 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
   const themeHeaderText = asThemeString(theme, 'headerText', '#ffffff');
   const themeAccent = asThemeString(theme, 'accent', '#5A6FF0');
   const backgroundImage = asThemeString(theme, 'backgroundImage', '');
+  const backgroundSizeRaw = asThemeNumber(theme, 'backgroundSize', 100);
+  const backgroundSize = Math.max(20, Math.min(200, backgroundSizeRaw));
   const overlayRaw = asThemeNumber(theme, 'backgroundOverlay', 0);
-  const overlay = Math.max(0, Math.min(60, overlayRaw)) / 100;
+  const overlay = Math.max(0, Math.min(100, overlayRaw)) / 100;
   const backgroundImageCss = backgroundImage
     ? `linear-gradient(rgba(255,255,255,${overlay}), rgba(255,255,255,${overlay})), url('${backgroundImage.replace(/'/g, '%27')}')`
     : `linear-gradient(rgba(255,255,255,${overlay}), rgba(255,255,255,${overlay}))`;
@@ -294,8 +295,9 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
         box-shadow: 0 12px 30px rgba(0, 0, 0, 0.14);
         background: ${backgroundImageCss};
         background-color: ${escapeHtml(themeSheet)};
-        background-size: cover;
+        background-size: ${backgroundSize}%;
         background-position: center;
+        background-repeat: no-repeat;
         color: ${escapeHtml(themeText)};
         padding: 10px;
         min-height: calc(297mm - 16mm);
@@ -303,16 +305,17 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
         flex-direction: column;
       }
       .preview__header {
-        display: flex;
-        flex-wrap: wrap;
+        display: grid;
+        grid-template-columns: 1fr auto 1fr;
         align-items: center;
-        justify-content: space-between;
         gap: 0.45rem;
         border-bottom: 1px solid ${escapeHtml(themeBorder)};
         padding-bottom: 0.35rem;
       }
-      .preview__title { font-size: 1.02rem; font-weight: 700; line-height: 1.1; }
-      .preview__subtitle { font-size: 0.72rem; color: ${escapeHtml(themeMuted)}; margin-top: 0.1rem; }
+      .preview__header-content { grid-column: 2; min-width: 0; }
+      .preview__header-meta { grid-column: 3; justify-self: end; }
+      .preview__title { font-size: 1.02rem; font-weight: 700; line-height: 1.1; text-align: center; }
+      .preview__subtitle { font-size: 0.72rem; color: ${escapeHtml(themeMuted)}; margin-top: 0.1rem; text-align: center; }
       .preview__quote-number {
         font-size: 0.66rem;
         font-weight: 600;
@@ -322,12 +325,18 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
       .preview__hero {
         margin-top: 0.42rem;
         display: flex;
-        flex-wrap: wrap;
-        align-items: center;
+        flex-wrap: nowrap;
+        align-items: flex-start;
         justify-content: space-between;
         gap: 0.5rem;
       }
-      .preview__hero-content { display: flex; flex-direction: column; gap: 0.18rem; }
+      .preview__hero-content {
+        display: flex;
+        flex: 1 1 auto;
+        flex-direction: column;
+        gap: 0.18rem;
+        min-width: 0;
+      }
       .preview__hero-title { font-size: 0.9rem; font-weight: 600; line-height: 1.2; }
       .preview__hero-text { font-size: 0.74rem; color: ${escapeHtml(themeMuted)}; line-height: 1.28; }
       .preview__multiline { white-space: pre-line; }
@@ -337,6 +346,7 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
         width: 2.8rem;
         align-items: center;
         justify-content: center;
+        flex-shrink: 0;
         border-radius: 9999px;
         border: 1px solid ${escapeHtml(themeBorder)};
         font-size: 0.62rem;
@@ -460,7 +470,7 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
         </header>
 
         <section class="preview__hero">
-          <div>
+          <div class="preview__hero-content">
             <h3 class="preview__hero-title">${escapeHtml(subtitle || '')}</h3>
             <p class="preview__hero-text preview__multiline">${escapeHtml(
               formatIndentedText(description),

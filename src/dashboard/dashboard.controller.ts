@@ -16,6 +16,24 @@ import { DashboardService } from './dashboard.service';
 export class DashboardController {
   constructor(private readonly dashboardService: DashboardService) {}
 
+  @Get('overview')
+  overview(@CurrentUser() user: AuthUser) {
+    return this.dashboardService.getOverview(user.workspaceId);
+  }
+
+  @Get('search')
+  search(
+    @CurrentUser() user: AuthUser,
+    @Query('q') query?: string,
+  ) {
+    return this.dashboardService.search(user.workspaceId, query ?? '');
+  }
+
+  @Get('analytics')
+  analytics(@CurrentUser() user: AuthUser) {
+    return this.dashboardService.getAnalytics(user.workspaceId);
+  }
+
   @Get('summary')
   summary(@CurrentUser() user: AuthUser) {
     return this.dashboardService.getSummary(user.workspaceId);

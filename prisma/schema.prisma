@@ -15,6 +15,11 @@ enum QuoteStatus {
   CANCELLED
 }
 
+enum PaymentStatus {
+  PENDING
+  PAID
+}
+
 enum PlanType {
   FREE
   PRO
@@ -288,6 +293,7 @@ model Quote {
   folderId              String?
   templateId            String?
   status                QuoteStatus @default(DRAFT)
+  paymentStatus         PaymentStatus @default(PENDING)
   quoteNumber           String
   title                 String
   subtitle              String?
