@@ -1,4 +1,4 @@
-import { BadRequestException, Injectable } from '@nestjs/common';
+import { BadRequestException, Injectable, Logger } from '@nestjs/common';
 import { Prisma, QuoteStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -24,6 +24,8 @@ type AnalyticsMonthPoint = {
 
 @Injectable()
 export class DashboardService {
+  private readonly logger = new Logger(DashboardService.name);
+
   constructor(private readonly prisma: PrismaService) {}
 
   async getSummary(workspaceId: string) {
@@ -240,46 +242,70 @@ export class DashboardService {
   }
 
   async getAnalytics(workspaceId: string) {
-    const [quotes, templateCounts, topServiceRows, metrics] = await Promise.all([
-      this.prisma.quote.findMany({
-        where: { workspaceId },
-        orderBy: { issuedAt: 'asc' },
-        select: {
-          templateId: true,
-          status: true,
-          total: true,
-          issuedAt: true,
-          sentAt: true,
-          acceptedAt: true,
-          rejectedAt: true,
-          validUntil: true,
-          _count: {
-            select: {
-              items: true,
-            },
+    const profilingEnabled = process.env.PROFILE_DASHBOARD_ANALYTICS === '1';
+    const startedAt = Date.now();
+
+    const quotesStartedAt = Date.now();
+    const quotesPromise = this.prisma.quote.findMany({
+      where: { workspaceId },
+      orderBy: { issuedAt: 'asc' },
+      select: {
+        templateId: true,
+        status: true,
+        total: true,
+        issuedAt: true,
+        sentAt: true,
+        acceptedAt: true,
+        rejectedAt: true,
+        validUntil: true,
+        _count: {
+          select: {
+            items: true,
           },
         },
-      }),
-      this.prisma.quote.groupBy({
-        by: ['templateId'],
-        where: { workspaceId },
-        _count: {
-          templateId: true,
+      },
+    }).then((items) => ({
+      items,
+      elapsedMs: Date.now() - quotesStartedAt,
+    }));
+
+    const templateCountsStartedAt = Date.now();
+    const templateCountsPromise = this.prisma.quote.groupBy({
+      by: ['templateId'],
+      where: { workspaceId },
+      _count: {
+        templateId: true,
+      },
+    }).then((items) => ({
+      items,
+      elapsedMs: Date.now() - templateCountsStartedAt,
+    }));
+
+    const topServiceRowsStartedAt = Date.now();
+    const topServiceRowsPromise = this.prisma.quoteItem.groupBy({
+      by: ['title'],
+      where: {
+        quote: {
+          workspaceId,
         },
-      }),
-      this.prisma.quoteItem.groupBy({
-        by: ['title'],
-        where: {
-          quote: {
-            workspaceId,
-          },
-        },
-        _count: {
-          title: true,
-        },
-      }),
+      },
+      _count: {
+        title: true,
+      },
+    }).then((items) => ({
+      items,
+      elapsedMs: Date.now() - topServiceRowsStartedAt,
+    }));
+
+    const [quotesResult, templateCountsResult, topServiceRowsResult, metrics] = await Promise.all([
+      quotesPromise,
+      templateCountsPromise,
+      topServiceRowsPromise,
       this.getMetrics(workspaceId, 'month'),
     ]);
+    const quotes = quotesResult.items;
+    const templateCounts = templateCountsResult.items;
+    const topServiceRows = topServiceRowsResult.items;
 
     const byStatus = Object.values(QuoteStatus).reduce(
       (acc, status) => {
@@ -314,12 +340,14 @@ export class DashboardService {
       .map((entry) => entry.templateId)
       .filter((id): id is string => !!id);
 
+    const templateLookupStartedAt = Date.now();
     const templates = templateIds.length
       ? await this.prisma.template.findMany({
           where: { id: { in: templateIds } },
           select: { id: true, name: true },
         })
       : [];
+    const templateLookupMs = Date.now() - templateLookupStartedAt;
 
     const templateNameById = new Map(templates.map((template) => [template.id, template.name]));
 
@@ -350,7 +378,7 @@ export class DashboardService {
         itemsCount: quote._count.items,
       }));
 
-    return {
+    const payload = {
       totals: {
         totalQuotes: quotes.length,
         measuredQuotes,
@@ -370,6 +398,27 @@ export class DashboardService {
       monthSeries: this.buildLast6MonthsAnalyticsSeries(quotes),
       scatter,
     };
+
+    if (profilingEnabled) {
+      this.logger.log(
+        JSON.stringify({
+          event: 'dashboard_analytics_profile',
+          workspaceId,
+          quoteCount: quotes.length,
+          templateCountRows: templateCounts.length,
+          topServiceRowsCount: topServiceRows.length,
+          timingsMs: {
+            quotesFindMany: quotesResult.elapsedMs,
+            templateCountsGroupBy: templateCountsResult.elapsedMs,
+            quoteItemTitleGroupBy: topServiceRowsResult.elapsedMs,
+            templateLookup: templateLookupMs,
+            total: Date.now() - startedAt,
+          },
+        }),
+      );
+    }
+
+    return payload;
   }
 
   private parseClientData(value: Prisma.JsonValue | null): { name?: string } {

@@ -3,6 +3,7 @@ import {
   ConflictException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { PaymentStatus, Prisma, QuoteStatus, TemplateType } from '@prisma/client';
@@ -11,6 +12,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateQuoteDto } from './dto/create-quote.dto';
 import { CreateQuoteFolderDto } from './dto/create-quote-folder.dto';
+import { CreateQuoteItemDto } from './dto/create-quote-item.dto';
 import { UpdateQuoteDto } from './dto/update-quote.dto';
 import { renderQuotePdfHtml } from './pdf/quote-pdf.template';
 import {
@@ -31,8 +33,24 @@ const QUOTE_STATUS_TRANSITIONS: Record<QuoteStatus, QuoteStatus[]> = {
   [QuoteStatus.CANCELLED]: [],
 };
 
+type QuoteListQuery = {
+  page?: string;
+  pageSize?: string;
+  search?: string;
+  status?: string;
+  client?: string;
+  dateFrom?: string;
+  dateTo?: string;
+  minTotal?: string;
+  maxTotal?: string;
+  folderId?: string;
+  favoriteIds?: string;
+};
+
 @Injectable()
 export class QuotesService {
+  private readonly logger = new Logger(QuotesService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly subscriptionsService: SubscriptionsService,
@@ -67,25 +85,147 @@ export class QuotesService {
       },
     });
 
-    return quotes.map((quote) => ({
-      id: quote.id,
-      folderId: quote.folderId ?? null,
-      templateId: quote.templateId ?? null,
-      quoteNumber: this.normalizeQuoteNumber(quote.quoteNumber),
-      title: quote.title,
-      clientData: this.toSummaryClientData(quote.clientData),
-      total: new Prisma.Decimal(quote.total).toNumber(),
-      issuedAt: quote.issuedAt.toISOString().slice(0, 10),
-      validUntil: quote.validUntil.toISOString().slice(0, 10),
-      sentAt: quote.sentAt?.toISOString() ?? null,
-      viewedAt: quote.viewedAt?.toISOString() ?? null,
-      acceptedAt: quote.acceptedAt?.toISOString() ?? null,
-      rejectedAt: quote.rejectedAt?.toISOString() ?? null,
-      cancelledAt: quote.cancelledAt?.toISOString() ?? null,
-      status: quote.status,
-      paymentStatus: quote.paymentStatus,
-      itemsCount: quote._count.items,
-    }));
+    return quotes.map((quote) => this.toQuoteSummary(quote));
+  }
+
+  async getComposerBootstrap(workspaceId: string) {
+    const profilingEnabled = process.env.PROFILE_QUOTES_COMPOSER_BOOTSTRAP === '1';
+    const startedAt = Date.now();
+
+    const nextQuoteNumberStartedAt = Date.now();
+    const [nextQuoteNumber, recentQuotes] = await Promise.all([
+      this.getNextQuoteNumber(workspaceId),
+      (async () => {
+        const recentQuotesStartedAt = Date.now();
+        const items = await this.prisma.quote.findMany({
+          where: { workspaceId },
+          orderBy: { createdAt: 'desc' },
+          take: 3,
+          select: {
+            id: true,
+            folderId: true,
+            templateId: true,
+            quoteNumber: true,
+            title: true,
+            clientData: true,
+            total: true,
+            issuedAt: true,
+            validUntil: true,
+            sentAt: true,
+            viewedAt: true,
+            acceptedAt: true,
+            rejectedAt: true,
+            cancelledAt: true,
+            status: true,
+            paymentStatus: true,
+            _count: {
+              select: {
+                items: true,
+              },
+            },
+          },
+        });
+
+        return {
+          items,
+          elapsedMs: Date.now() - recentQuotesStartedAt,
+        };
+      })(),
+    ]);
+    const nextQuoteNumberMs = Date.now() - nextQuoteNumberStartedAt;
+    const totalMs = Date.now() - startedAt;
+
+    if (profilingEnabled) {
+      this.logger.log(
+        JSON.stringify({
+          event: 'quotes_composer_bootstrap_profile',
+          workspaceId,
+          recentQuotesCount: recentQuotes.items.length,
+          timingsMs: {
+            nextQuoteNumber: nextQuoteNumberMs,
+            recentQuotes: recentQuotes.elapsedMs,
+            total: totalMs,
+          },
+        }),
+      );
+    }
+
+    return {
+      nextQuoteNumber,
+      recentQuotes: recentQuotes.items.map((quote) => this.toQuoteSummary(quote)),
+    };
+  }
+
+  async listPage(workspaceId: string, query: QuoteListQuery) {
+    const page = this.parsePositiveInt(query.page, 1);
+    const pageSize = Math.min(this.parsePositiveInt(query.pageSize, 18), 50);
+    const favoriteIds = this.parseFavoriteIds(query.favoriteIds);
+
+    if (query.favoriteIds && favoriteIds.length === 0) {
+      return {
+        items: [],
+        total: 0,
+        page: 1,
+        pageSize,
+        totalPages: 1,
+        folderCounts: await this.listFolderCounts(workspaceId),
+      };
+    }
+
+    const where = this.buildQuoteListWhere(workspaceId, query, favoriteIds);
+    const [items, total] = await this.prisma.$transaction([
+      this.prisma.quote.findMany({
+        where,
+        orderBy: { createdAt: 'desc' },
+        skip: (page - 1) * pageSize,
+        take: pageSize,
+        select: {
+          id: true,
+          folderId: true,
+          templateId: true,
+          quoteNumber: true,
+          title: true,
+          clientData: true,
+          total: true,
+          issuedAt: true,
+          validUntil: true,
+          sentAt: true,
+          viewedAt: true,
+          acceptedAt: true,
+          rejectedAt: true,
+          cancelledAt: true,
+          status: true,
+          paymentStatus: true,
+          _count: {
+            select: {
+              items: true,
+            },
+          },
+        },
+      }),
+      this.prisma.quote.count({ where }),
+    ]);
+    const folderCounts = await this.listFolderCounts(workspaceId);
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    const safePage = Math.min(page, totalPages);
+
+    if (safePage !== page) {
+      return this.listPage(workspaceId, {
+        ...query,
+        page: String(safePage),
+        pageSize: String(pageSize),
+      });
+    }
+
+    return {
+      items: items.map((quote) => this.toQuoteSummary(quote)),
+      total,
+      page: safePage,
+      pageSize,
+      totalPages,
+      folderCounts,
+    };
   }
 
   listFolders(workspaceId: string) {
@@ -216,24 +356,20 @@ export class QuotesService {
       throw new NotFoundException('Template not found');
     }
 
-    const issuedAt = new Date(dto.issuedAt);
-    const validUntil = new Date(dto.validUntil);
-    if (Number.isNaN(issuedAt.getTime()) || Number.isNaN(validUntil.getTime())) {
-      throw new BadRequestException('Invalid dates');
-    }
+    const { issuedAt, validUntil } = this.normalizeDraftDates(
+      dto.issuedAt,
+      dto.validUntil,
+    );
+    const items = this.normalizeDraftItems(dto.items);
 
-    if (issuedAt > validUntil) {
-      throw new BadRequestException('validUntil must be after issuedAt');
-    }
-
-    await this.assertItemServicesOwnership(workspaceId, dto.items);
+    await this.assertItemServicesOwnership(workspaceId, items);
 
     const senderProfile = await this.prisma.senderProfile.findFirst({
       where: { workspaceId },
       orderBy: { updatedAt: 'desc' },
     });
 
-    const totals = this.calculateTotals(dto.items, dto.discount, dto.taxRate);
+    const totals = this.calculateTotals(items, dto.discount, dto.taxRate);
     const now = new Date();
 
     return this.prisma.quote.create({
@@ -244,11 +380,13 @@ export class QuotesService {
         folderId: null,
         status: QuoteStatus.DRAFT,
         paymentStatus: dto.paymentStatus ?? PaymentStatus.PENDING,
-        quoteNumber: this.normalizeQuoteNumber(dto.quoteNumber),
-        title: dto.title,
+        quoteNumber: dto.quoteNumber
+          ? this.normalizeQuoteNumber(dto.quoteNumber)
+          : await this.getNextQuoteNumber(workspaceId),
+        title: dto.title?.trim() || 'Cotizacion',
         subtitle: dto.subtitle,
         description: dto.description,
-        clientData: dto.clientData,
+        clientData: this.normalizeDraftClientData(dto.clientData),
         eventData: dto.eventData,
         paymentData: dto.paymentData,
         contactData: dto.contactData,
@@ -289,17 +427,19 @@ export class QuotesService {
               })),
             }
           : undefined,
-        items: {
-          create: dto.items.map((item, index) => ({
-            title: item.title,
-            description: item.description,
-            quantity: item.quantity,
-            unitPrice: new Prisma.Decimal(item.unitPrice),
-            total: new Prisma.Decimal(item.unitPrice).mul(item.quantity),
-            position: index,
-            serviceId: item.serviceId,
-          })),
-        },
+        items: items.length
+          ? {
+              create: items.map((item, index) => ({
+                title: item.title,
+                description: item.description,
+                quantity: item.quantity,
+                unitPrice: new Prisma.Decimal(item.unitPrice),
+                total: new Prisma.Decimal(item.unitPrice).mul(item.quantity),
+                position: index,
+                serviceId: item.serviceId,
+              })),
+            }
+          : undefined,
       } as any,
       include: {
         sections: {
@@ -327,23 +467,23 @@ export class QuotesService {
       throw new BadRequestException('Template cannot be changed');
     }
 
-    const issuedAt = dto.issuedAt ? new Date(dto.issuedAt) : quote.issuedAt;
-    const validUntil = dto.validUntil ? new Date(dto.validUntil) : quote.validUntil;
+    const { issuedAt, validUntil } = this.normalizeDraftDates(
+      dto.issuedAt ?? quote.issuedAt.toISOString(),
+      dto.validUntil ?? quote.validUntil.toISOString(),
+    );
 
-    if (issuedAt > validUntil) {
-      throw new BadRequestException('validUntil must be after issuedAt');
-    }
-
-    const items = dto.items ?? quote.items.map((item) => ({
-      title: item.title,
-      description: item.description,
-      quantity: item.quantity,
-      unitPrice: Number(item.unitPrice),
-      serviceId: item.serviceId ?? undefined,
-    }));
+    const items = dto.items
+      ? this.normalizeDraftItems(dto.items)
+      : quote.items.map((item) => ({
+          title: item.title,
+          description: item.description ?? '',
+          quantity: item.quantity,
+          unitPrice: Number(item.unitPrice),
+          serviceId: item.serviceId ?? undefined,
+        }));
 
     if (dto.items) {
-      await this.assertItemServicesOwnership(workspaceId, dto.items);
+      await this.assertItemServicesOwnership(workspaceId, items);
     }
 
     const totals = this.calculateTotals(
@@ -377,10 +517,12 @@ export class QuotesService {
           status: nextStatus,
           paymentStatus: dto.paymentStatus,
           quoteNumber: dto.quoteNumber ? this.normalizeQuoteNumber(dto.quoteNumber) : undefined,
-          title: dto.title,
+          title: dto.title !== undefined ? dto.title.trim() || 'Cotizacion' : undefined,
           subtitle: dto.subtitle,
           description: dto.description,
-          clientData: dto.clientData,
+          clientData: dto.clientData
+            ? this.normalizeDraftClientData(dto.clientData)
+            : undefined,
           eventData: dto.eventData,
           paymentData: dto.paymentData,
           contactData: dto.contactData,
@@ -397,7 +539,7 @@ export class QuotesService {
           ...(transitionPatch ?? {}),
           items: dto.items
             ? {
-                create: dto.items.map((item, index) => ({
+                create: items.map((item, index) => ({
                   title: item.title,
                   description: item.description,
                   quantity: item.quantity,
@@ -780,6 +922,90 @@ export class QuotesService {
     return Number.isFinite(parsed) ? parsed : null;
   }
 
+  private normalizeDraftItems(items?: CreateQuoteItemDto[]) {
+    return (items ?? [])
+      .filter((item) => this.isMeaningfulDraftItem(item))
+      .map((item) => ({
+        title: item.title?.trim() || 'Servicio',
+        description: item.description?.trim() || '',
+        quantity: this.normalizePositiveInteger(item.quantity, 1),
+        unitPrice: this.normalizeNonNegativeInteger(item.unitPrice, 0),
+        serviceId: item.serviceId ?? undefined,
+      }));
+  }
+
+  private isMeaningfulDraftItem(item: Partial<CreateQuoteItemDto> | null | undefined): boolean {
+    if (!item) {
+      return false;
+    }
+
+    return !!item.serviceId
+      || !!item.title?.trim()
+      || !!item.description?.trim()
+      || Number(item.unitPrice ?? 0) > 0
+      || Number(item.quantity ?? 0) > 1;
+  }
+
+  private normalizeDraftClientData(value?: Record<string, string>) {
+    return {
+      name: value?.name?.trim() || '',
+      rut: value?.rut?.trim() || '',
+      giro: value?.giro?.trim() || '',
+      email: value?.email?.trim() || '',
+      address: value?.address?.trim() || '',
+    };
+  }
+
+  private normalizeDraftDates(
+    issuedAt?: string,
+    validUntil?: string,
+  ): { issuedAt: Date; validUntil: Date } {
+    const now = new Date();
+    const safeIssuedAt = this.parseDateOrFallback(issuedAt, now);
+    const fallbackValidUntil = new Date(safeIssuedAt);
+    fallbackValidUntil.setDate(fallbackValidUntil.getDate() + 7);
+    const safeValidUntil = this.parseDateOrFallback(validUntil, fallbackValidUntil);
+
+    if (safeIssuedAt.getTime() > safeValidUntil.getTime()) {
+      throw new BadRequestException('validUntil must be after issuedAt');
+    }
+
+    return {
+      issuedAt: safeIssuedAt,
+      validUntil: safeValidUntil,
+    };
+  }
+
+  private parseDateOrFallback(value: string | undefined, fallback: Date): Date {
+    const raw = value?.trim();
+    if (!raw) {
+      return new Date(fallback);
+    }
+
+    const parsed = new Date(raw);
+    if (Number.isNaN(parsed.getTime())) {
+      return new Date(fallback);
+    }
+
+    return parsed;
+  }
+
+  private normalizePositiveInteger(value: unknown, fallback: number): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 1) {
+      return fallback;
+    }
+    return Math.round(parsed);
+  }
+
+  private normalizeNonNegativeInteger(value: unknown, fallback: number): number {
+    const parsed = Number(value);
+    if (!Number.isFinite(parsed) || parsed < 0) {
+      return fallback;
+    }
+    return Math.round(parsed);
+  }
+
   private async assertFolderOwnership(workspaceId: string, folderId: string) {
     const folder = await (this.prisma as any).quoteFolder.findFirst({
       where: { id: folderId, workspaceId, isArchived: false },
@@ -858,5 +1084,189 @@ export class QuotesService {
       : [];
 
     return target.includes('workspaceId') && target.includes('name');
+  }
+
+  private toQuoteSummary(quote: {
+    id: string;
+    folderId: string | null;
+    templateId: string | null;
+    quoteNumber: string;
+    title: string;
+    clientData: Prisma.JsonValue;
+    total: Prisma.Decimal | number | string;
+    issuedAt: Date;
+    validUntil: Date;
+    sentAt: Date | null;
+    viewedAt: Date | null;
+    acceptedAt: Date | null;
+    rejectedAt: Date | null;
+    cancelledAt: Date | null;
+    status: QuoteStatus;
+    paymentStatus: PaymentStatus;
+    _count: { items: number };
+  }) {
+    return {
+      id: quote.id,
+      folderId: quote.folderId ?? null,
+      templateId: quote.templateId ?? null,
+      quoteNumber: this.normalizeQuoteNumber(quote.quoteNumber),
+      title: quote.title,
+      clientData: this.toSummaryClientData(quote.clientData),
+      total: new Prisma.Decimal(quote.total).toNumber(),
+      issuedAt: quote.issuedAt.toISOString().slice(0, 10),
+      validUntil: quote.validUntil.toISOString().slice(0, 10),
+      sentAt: quote.sentAt?.toISOString() ?? null,
+      viewedAt: quote.viewedAt?.toISOString() ?? null,
+      acceptedAt: quote.acceptedAt?.toISOString() ?? null,
+      rejectedAt: quote.rejectedAt?.toISOString() ?? null,
+      cancelledAt: quote.cancelledAt?.toISOString() ?? null,
+      status: quote.status,
+      paymentStatus: quote.paymentStatus,
+      itemsCount: quote._count.items,
+    };
+  }
+
+  private parsePositiveInt(value: string | undefined, fallback: number): number {
+    const parsed = Number.parseInt(value ?? '', 10);
+    return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
+  }
+
+  private parseFavoriteIds(value?: string): string[] {
+    if (!value) {
+      return [];
+    }
+
+    return value
+      .split(',')
+      .map((entry) => entry.trim())
+      .filter((entry) => /^[0-9a-f-]{36}$/i.test(entry));
+  }
+
+  private buildQuoteListWhere(
+    workspaceId: string,
+    query: QuoteListQuery,
+    favoriteIds: string[],
+  ): Prisma.QuoteWhereInput {
+    const search = query.search?.trim();
+    const client = query.client?.trim();
+    const dateFrom = query.dateFrom ? new Date(query.dateFrom) : null;
+    if (dateFrom && !Number.isNaN(dateFrom.getTime())) {
+      dateFrom.setHours(0, 0, 0, 0);
+    }
+    const dateTo = query.dateTo ? new Date(query.dateTo) : null;
+    if (dateTo && !Number.isNaN(dateTo.getTime())) {
+      dateTo.setHours(23, 59, 59, 999);
+    }
+    const minTotal = query.minTotal ? Number(query.minTotal) : null;
+    const maxTotal = query.maxTotal ? Number(query.maxTotal) : null;
+    const folderId = query.folderId?.trim();
+
+    const where: Prisma.QuoteWhereInput = { workspaceId };
+
+    if (folderId) {
+      where.folderId = folderId === 'none' ? null : folderId;
+    }
+
+    if (favoriteIds.length > 0) {
+      where.id = { in: favoriteIds };
+    }
+
+    if (search) {
+      where.OR = [
+        {
+          title: {
+            contains: search,
+            mode: 'insensitive',
+          },
+        },
+        {
+          quoteNumber: {
+            contains: search,
+            mode: 'insensitive',
+          },
+        },
+        {
+          clientData: {
+            path: ['name'],
+            string_contains: search,
+          },
+        },
+      ];
+    }
+
+    if (client) {
+      where.AND = [
+        ...(Array.isArray(where.AND) ? where.AND : []),
+        {
+          clientData: {
+            path: ['name'],
+            string_contains: client,
+          },
+        },
+      ];
+    }
+
+    const statusFilter = this.mapVisibleStatus(query.status);
+    if (statusFilter) {
+      where.status = statusFilter;
+    }
+
+    const hasDateFrom = !!dateFrom && !Number.isNaN(dateFrom.getTime());
+    const hasDateTo = !!dateTo && !Number.isNaN(dateTo.getTime());
+    if (hasDateFrom || hasDateTo) {
+      where.issuedAt = {
+        ...(hasDateFrom ? { gte: dateFrom! } : {}),
+        ...(hasDateTo ? { lte: dateTo! } : {}),
+      };
+    }
+
+    const hasMinTotal = minTotal !== null && Number.isFinite(minTotal);
+    const hasMaxTotal = maxTotal !== null && Number.isFinite(maxTotal);
+    if (hasMinTotal || hasMaxTotal) {
+      where.total = {
+        ...(hasMinTotal ? { gte: new Prisma.Decimal(minTotal!) } : {}),
+        ...(hasMaxTotal ? { lte: new Prisma.Decimal(maxTotal!) } : {}),
+      } as Prisma.DecimalFilter;
+    }
+
+    return where;
+  }
+
+  private mapVisibleStatus(status?: string): QuoteStatus | Prisma.EnumQuoteStatusFilter | undefined {
+    switch (status) {
+      case 'DRAFT':
+        return QuoteStatus.DRAFT;
+      case 'SENT':
+        return { in: [QuoteStatus.SENT, QuoteStatus.VIEWED] };
+      case 'ACCEPTED':
+        return QuoteStatus.ACCEPTED;
+      case 'CANCELLED':
+        return { in: [QuoteStatus.CANCELLED, QuoteStatus.REJECTED] };
+      default:
+        return undefined;
+    }
+  }
+
+  private async listFolderCounts(workspaceId: string): Promise<Record<string, number>> {
+    const grouped = await this.prisma.quote.groupBy({
+      by: ['folderId'],
+      where: { workspaceId },
+      _count: {
+        _all: true,
+      },
+    });
+
+    const counts: Record<string, number> = { all: 0, none: 0 };
+    for (const row of grouped) {
+      const count = row._count._all;
+      counts.all += count;
+      if (!row.folderId) {
+        counts.none += count;
+        continue;
+      }
+      counts[row.folderId] = count;
+    }
+
+    return counts;
   }
 }

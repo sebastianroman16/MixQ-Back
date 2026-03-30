@@ -1,5 +1,4 @@
 import {
-  ArrayMinSize,
   IsArray,
   IsDateString,
   IsEnum,
@@ -22,11 +21,13 @@ export class CreateQuoteDto {
   @IsUUID()
   templateId?: string;
 
+  @IsOptional()
   @IsString()
-  quoteNumber: string;
+  quoteNumber?: string;
 
+  @IsOptional()
   @IsString()
-  title: string;
+  title?: string;
 
   @IsOptional()
   @IsString()
@@ -36,8 +37,9 @@ export class CreateQuoteDto {
   @IsString()
   description?: string;
 
+  @IsOptional()
   @IsObject()
-  clientData: Record<string, string>;
+  clientData?: Record<string, string>;
 
   @IsOptional()
   @IsObject()
@@ -60,26 +62,29 @@ export class CreateQuoteDto {
   @IsString()
   termsText?: string;
 
+  @IsOptional()
   @IsArray()
-  @ArrayMinSize(1)
   @ValidateNested({ each: true })
   @Type(() => CreateQuoteItemDto)
-  items: CreateQuoteItemDto[];
+  items?: CreateQuoteItemDto[];
 
+  @IsOptional()
   @IsNumber()
   @Min(0)
-  taxRate: number;
+  taxRate?: number;
 
   @IsOptional()
   @IsInt()
   @Min(0)
   discount?: number;
 
+  @IsOptional()
   @IsDateString()
-  issuedAt: string;
+  issuedAt?: string;
 
+  @IsOptional()
   @IsDateString()
-  validUntil: string;
+  validUntil?: string;
 
   @IsOptional()
   @IsEnum(PaymentStatus)

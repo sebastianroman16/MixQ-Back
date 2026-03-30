@@ -14,6 +14,7 @@ import { UpdateServiceDto } from './dto/update-service.dto';
 interface ServiceFilters {
   categoryId?: string;
   search?: string;
+  limit?: string;
 }
 
 @Injectable()
@@ -25,11 +26,13 @@ export class ServicesService {
 
   async create(userId: string, workspaceId: string, dto: CreateServiceDto) {
     await this.subscriptionsService.assertCanCreateService(userId);
-    const category = await this.ensureCategoryAccess(workspaceId, dto.categoryId);
+    const category = dto.categoryId
+      ? await this.ensureCategoryAccess(workspaceId, dto.categoryId)
+      : null;
     const inventoryCode = await this.generateInventoryCode(
       workspaceId,
-      category.id,
-      category.name,
+      category?.id ?? null,
+      category?.name ?? null,
     );
 
     try {
@@ -40,7 +43,7 @@ export class ServicesService {
           inventoryCode,
           name: dto.name,
           description: dto.description,
-          categoryId: dto.categoryId,
+          categoryId: dto.categoryId ?? null,
           unitPrice: new Prisma.Decimal(dto.unitPrice),
           quantity: dto.quantity,
         },
@@ -59,6 +62,9 @@ export class ServicesService {
   findAll(workspaceId: string, filters: ServiceFilters = {}) {
     const categoryId = filters.categoryId?.trim();
     const search = filters.search?.trim();
+    const parsedLimit = Number.parseInt(filters.limit ?? '', 10);
+    const limit =
+      Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 250) : undefined;
 
     return this.prisma.service.findMany({
       where: {
@@ -93,6 +99,7 @@ export class ServicesService {
       },
       orderBy: { createdAt: 'desc' },
       include: { category: true },
+      ...(limit ? { take: limit } : {}),
     });
   }
 
@@ -113,13 +120,15 @@ export class ServicesService {
     const service = await this.ensureServiceAccess(workspaceId, id);
     let inventoryCode: string | undefined;
 
-    if (dto.categoryId) {
-      const category = await this.ensureCategoryAccess(workspaceId, dto.categoryId);
-      if (category.id !== service.categoryId) {
+    if (dto.categoryId !== undefined) {
+      const category = dto.categoryId
+        ? await this.ensureCategoryAccess(workspaceId, dto.categoryId)
+        : null;
+      if ((category?.id ?? null) !== service.categoryId) {
         inventoryCode = await this.generateInventoryCode(
           workspaceId,
-          category.id,
-          category.name,
+          category?.id ?? null,
+          category?.name ?? null,
         );
       }
     }
@@ -281,10 +290,10 @@ export class ServicesService {
 
   private async generateInventoryCode(
     workspaceId: string,
-    categoryId: string,
-    categoryName: string,
+    categoryId: string | null,
+    categoryName: string | null,
   ) {
-    const prefix = this.buildPrefix(categoryName);
+    const prefix = categoryName ? this.buildPrefix(categoryName) : 'SG';
     const latest = await this.prisma.service.findFirst({
       where: {
         workspaceId,

@@ -38,8 +38,9 @@ export class ServicesController {
     @CurrentUser() user: AuthUser,
     @Query('categoryId') categoryId?: string,
     @Query('search') search?: string,
+    @Query('limit') limit?: string,
   ) {
-    return this.servicesService.findAll(user.workspaceId, { categoryId, search });
+    return this.servicesService.findAll(user.workspaceId, { categoryId, search, limit });
   }
 
   @Post('categories')

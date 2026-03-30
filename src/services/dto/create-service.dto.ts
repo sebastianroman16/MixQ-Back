@@ -8,8 +8,9 @@ export class CreateServiceDto {
   @IsString()
   description?: string;
 
+  @IsOptional()
   @IsUUID()
-  categoryId: string;
+  categoryId?: string | null;
 
   @IsInt()
   @Min(0)

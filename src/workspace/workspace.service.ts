@@ -2,6 +2,7 @@ import {
   BadRequestException,
   ForbiddenException,
   Injectable,
+  Logger,
   NotFoundException,
 } from '@nestjs/common';
 import { Prisma, QuoteStatus, WorkspaceRole } from '@prisma/client';
@@ -17,6 +18,8 @@ type MetricsRange = 'month' | 'quarter' | 'year';
 
 @Injectable()
 export class WorkspaceService {
+  private readonly logger = new Logger(WorkspaceService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly subscriptionsService: SubscriptionsService,
@@ -453,10 +456,13 @@ export class WorkspaceService {
 
   async getAdvancedMetrics(user: AuthUser, range: MetricsRange = 'month') {
     this.assertManagerRole(user.role);
+    const profilingEnabled = process.env.PROFILE_WORKSPACE_METRICS === '1';
+    const startedAt = Date.now();
 
     const now = new Date();
     const start = this.getRangeStart(range, now);
 
+    const quotesStartedAt = Date.now();
     const quotes = await this.prisma.quote.findMany({
       where: {
         workspaceId: user.workspaceId,
@@ -479,7 +485,9 @@ export class WorkspaceService {
       },
       orderBy: { issuedAt: 'asc' },
     });
+    const quotesQueryMs = Date.now() - quotesStartedAt;
 
+    const membersStartedAt = Date.now();
     const members = await this.prisma.workspaceMember.findMany({
       where: { workspaceId: user.workspaceId },
       include: {
@@ -492,6 +500,8 @@ export class WorkspaceService {
         },
       },
     });
+    const membersQueryMs = Date.now() - membersStartedAt;
+    const computeStartedAt = Date.now();
 
     const funnel = {
       draft: 0,
@@ -624,7 +634,7 @@ export class WorkspaceService {
         .reduce((acc, quote) => acc + new Prisma.Decimal(quote.total).toNumber(), 0),
     };
 
-    return {
+    const payload = {
       range,
       from: start.toISOString(),
       to: now.toISOString(),
@@ -650,6 +660,26 @@ export class WorkspaceService {
           totals.quotedRevenue > 0 ? openWeightedForecast / totals.quotedRevenue : 0,
       },
     };
+
+    if (profilingEnabled) {
+      this.logger.log(
+        JSON.stringify({
+          event: 'workspace_metrics_advanced_profile',
+          workspaceId: user.workspaceId,
+          range,
+          quoteCount: quotes.length,
+          memberCount: members.length,
+          timingsMs: {
+            quotesQuery: quotesQueryMs,
+            membersQuery: membersQueryMs,
+            compute: Date.now() - computeStartedAt,
+            total: Date.now() - startedAt,
+          },
+        }),
+      );
+    }
+
+    return payload;
   }
 
   private buildMonthlyTrend(

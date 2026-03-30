@@ -7,6 +7,7 @@ import {
   ParseUUIDPipe,
   Patch,
   Post,
+  Query,
   Res,
   StreamableFile,
   UseGuards,
@@ -37,8 +38,53 @@ export class QuotesController {
   }
 
   @Get()
-  list(@CurrentUser() user: AuthUser) {
+  list(
+    @CurrentUser() user: AuthUser,
+    @Query('page') page?: string,
+    @Query('pageSize') pageSize?: string,
+    @Query('search') search?: string,
+    @Query('status') status?: string,
+    @Query('client') client?: string,
+    @Query('dateFrom') dateFrom?: string,
+    @Query('dateTo') dateTo?: string,
+    @Query('minTotal') minTotal?: string,
+    @Query('maxTotal') maxTotal?: string,
+    @Query('folderId') folderId?: string,
+    @Query('favoriteIds') favoriteIds?: string,
+  ) {
+    if (
+      page ||
+      pageSize ||
+      search ||
+      status ||
+      client ||
+      dateFrom ||
+      dateTo ||
+      minTotal ||
+      maxTotal ||
+      folderId ||
+      favoriteIds
+    ) {
+      return this.quotesService.listPage(user.workspaceId, {
+        page,
+        pageSize,
+        search,
+        status,
+        client,
+        dateFrom,
+        dateTo,
+        minTotal,
+        maxTotal,
+        folderId,
+        favoriteIds,
+      });
+    }
     return this.quotesService.list(user.workspaceId);
+  }
+
+  @Get('composer-bootstrap')
+  composerBootstrap(@CurrentUser() user: AuthUser) {
+    return this.quotesService.getComposerBootstrap(user.workspaceId);
   }
 
   @Get('folders')

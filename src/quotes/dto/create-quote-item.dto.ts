@@ -1,19 +1,23 @@
 import { IsInt, IsOptional, IsString, IsUUID, Min } from 'class-validator';
 
 export class CreateQuoteItemDto {
+  @IsOptional()
   @IsString()
-  title: string;
+  title?: string;
 
+  @IsOptional()
   @IsString()
-  description: string;
+  description?: string;
 
+  @IsOptional()
   @IsInt()
   @Min(1)
-  quantity: number;
+  quantity?: number;
 
+  @IsOptional()
   @IsInt()
   @Min(0)
-  unitPrice: number;
+  unitPrice?: number;
 
   @IsOptional()
   @IsUUID()
