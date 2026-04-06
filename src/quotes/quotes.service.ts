@@ -900,6 +900,33 @@ export class QuotesService {
   }
 
   private async getNextQuoteNumber(workspaceId: string): Promise<string> {
+    try {
+      const rows = await this.prisma.$queryRaw<Array<{ maxNumber: bigint | number | null }>>(
+        Prisma.sql`
+          SELECT COALESCE(
+            MAX(
+              CAST(
+                NULLIF(regexp_replace("quoteNumber", '\D', '', 'g'), '') AS BIGINT
+              )
+            ),
+            0
+          ) AS "maxNumber"
+          FROM "Quote"
+          WHERE "workspaceId" = ${workspaceId}
+        `,
+      );
+
+      const rawMax = rows[0]?.maxNumber ?? 0;
+      const normalizedMax =
+        typeof rawMax === 'bigint' ? Number(rawMax) : Number(rawMax ?? 0);
+
+      if (Number.isFinite(normalizedMax) && normalizedMax >= 0) {
+        return String(normalizedMax + 1);
+      }
+    } catch {
+      // Fallback to the previous application-side calculation if the database cannot evaluate the query.
+    }
+
     const quotes = await this.prisma.quote.findMany({
       where: { workspaceId },
       select: { quoteNumber: true },
