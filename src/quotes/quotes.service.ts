@@ -66,6 +66,7 @@ export class QuotesService {
         templateId: true,
         quoteNumber: true,
         title: true,
+        subtitle: true,
         clientData: true,
         total: true,
         issuedAt: true,
@@ -107,6 +108,7 @@ export class QuotesService {
             templateId: true,
             quoteNumber: true,
             title: true,
+            subtitle: true,
             clientData: true,
             total: true,
             issuedAt: true,
@@ -185,6 +187,7 @@ export class QuotesService {
           templateId: true,
           quoteNumber: true,
           title: true,
+          subtitle: true,
           clientData: true,
           total: true,
           issuedAt: true,
@@ -1092,6 +1095,7 @@ export class QuotesService {
     templateId: string | null;
     quoteNumber: string;
     title: string;
+    subtitle: string | null;
     clientData: Prisma.JsonValue;
     total: Prisma.Decimal | number | string;
     issuedAt: Date;
@@ -1111,6 +1115,7 @@ export class QuotesService {
       templateId: quote.templateId ?? null,
       quoteNumber: this.normalizeQuoteNumber(quote.quoteNumber),
       title: quote.title,
+      subtitle: quote.subtitle ?? null,
       clientData: this.toSummaryClientData(quote.clientData),
       total: new Prisma.Decimal(quote.total).toNumber(),
       issuedAt: quote.issuedAt.toISOString().slice(0, 10),
