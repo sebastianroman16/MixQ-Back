@@ -17,6 +17,11 @@ interface ServiceFilters {
   limit?: string;
 }
 
+export interface ServiceCountsSummary {
+  total: number;
+  byCategory: Record<string, number>;
+}
+
 @Injectable()
 export class ServicesService {
   constructor(
@@ -101,6 +106,44 @@ export class ServicesService {
       include: { category: true },
       ...(limit ? { take: limit } : {}),
     });
+  }
+
+  async getCounts(workspaceId: string): Promise<ServiceCountsSummary> {
+    const [total, grouped] = await this.prisma.$transaction([
+      this.prisma.service.count({
+        where: { workspaceId },
+      }),
+      this.prisma.service.groupBy({
+        by: ['categoryId'],
+        where: {
+          workspaceId,
+          categoryId: { not: null },
+        },
+        orderBy: {
+          categoryId: 'asc',
+        },
+        _count: {
+          id: true,
+        },
+      }),
+    ]);
+
+    const byCategory: Record<string, number> = {};
+    for (const entry of grouped) {
+      if (!entry.categoryId) {
+        continue;
+      }
+      const count =
+        typeof entry._count === 'object' && entry._count
+          ? (entry._count.id ?? 0)
+          : 0;
+      byCategory[entry.categoryId] = count;
+    }
+
+    return {
+      total,
+      byCategory,
+    };
   }
 
   async findOne(workspaceId: string, id: string) {

@@ -43,6 +43,11 @@ export class ServicesController {
     return this.servicesService.findAll(user.workspaceId, { categoryId, search, limit });
   }
 
+  @Get('counts')
+  getCounts(@CurrentUser() user: AuthUser) {
+    return this.servicesService.getCounts(user.workspaceId);
+  }
+
   @Post('categories')
   @RequireWorkspaceRoles(...WORKSPACE_CAPABILITY_ROLES.editServices)
   createCategory(@CurrentUser() user: AuthUser, @Body() dto: CreateCategoryDto) {
