@@ -246,63 +246,70 @@ export class DashboardService {
     const startedAt = Date.now();
 
     const quotesStartedAt = Date.now();
-    const quotesPromise = this.prisma.quote.findMany({
-      where: { workspaceId },
-      orderBy: { issuedAt: 'asc' },
-      select: {
-        templateId: true,
-        status: true,
-        total: true,
-        issuedAt: true,
-        sentAt: true,
-        acceptedAt: true,
-        rejectedAt: true,
-        validUntil: true,
-        _count: {
-          select: {
-            items: true,
+    const quotesPromise = this.prisma.quote
+      .findMany({
+        where: { workspaceId },
+        orderBy: { issuedAt: 'asc' },
+        select: {
+          templateId: true,
+          status: true,
+          total: true,
+          issuedAt: true,
+          sentAt: true,
+          acceptedAt: true,
+          rejectedAt: true,
+          validUntil: true,
+          _count: {
+            select: {
+              items: true,
+            },
           },
         },
-      },
-    }).then((items) => ({
-      items,
-      elapsedMs: Date.now() - quotesStartedAt,
-    }));
+      })
+      .then((items) => ({
+        items,
+        elapsedMs: Date.now() - quotesStartedAt,
+      }));
 
     const templateCountsStartedAt = Date.now();
-    const templateCountsPromise = this.prisma.quote.groupBy({
-      by: ['templateId'],
-      where: { workspaceId },
-      _count: {
-        templateId: true,
-      },
-    }).then((items) => ({
-      items,
-      elapsedMs: Date.now() - templateCountsStartedAt,
-    }));
+    const templateCountsPromise = this.prisma.quote
+      .groupBy({
+        by: ['templateId'],
+        where: { workspaceId },
+        _count: {
+          templateId: true,
+        },
+      })
+      .then((items) => ({
+        items,
+        elapsedMs: Date.now() - templateCountsStartedAt,
+      }));
 
     const topServiceRowsStartedAt = Date.now();
-    const topServiceRowsPromise = this.prisma.quoteItem.groupBy({
-      by: ['title'],
-      where: {
-        quote: {
-          workspaceId,
+    const topServiceRowsPromise = this.prisma.quoteItem
+      .groupBy({
+        by: ['title'],
+        where: {
+          quote: {
+            workspaceId,
+          },
         },
-      },
-      _count: {
-        title: true,
-      },
-    }).then((items) => ({
-      items,
-      elapsedMs: Date.now() - topServiceRowsStartedAt,
-    }));
+        _count: {
+          title: true,
+        },
+      })
+      .then((items) => ({
+        items,
+        elapsedMs: Date.now() - topServiceRowsStartedAt,
+      }));
 
-    const [quotesResult, templateCountsResult, topServiceRowsResult, metrics] = await Promise.all([
-      quotesPromise,
-      templateCountsPromise,
-      topServiceRowsPromise,
-      this.getMetrics(workspaceId, 'month'),
-    ]);
+    const [quotesResult, templateCountsResult, topServiceRowsResult, metrics] =
+      await Promise.all([
+        quotesPromise,
+        templateCountsPromise,
+        topServiceRowsPromise,
+        this.getMetrics(workspaceId, 'month'),
+      ]);
     const quotes = quotesResult.items;
     const templateCounts = templateCountsResult.items;
     const topServiceRows = topServiceRowsResult.items;
@@ -331,7 +338,10 @@ export class DashboardService {
         acceptedQuotes += 1;
         acceptedRevenue += total;
       }
-      if (quote.status === QuoteStatus.SENT || quote.status === QuoteStatus.VIEWED) {
+      if (
+        quote.status === QuoteStatus.SENT ||
+        quote.status === QuoteStatus.VIEWED
+      ) {
         sentQuotes += 1;
       }
     }
@@ -349,12 +359,14 @@ export class DashboardService {
       : [];
     const templateLookupMs = Date.now() - templateLookupStartedAt;
 
-    const templateNameById = new Map(templates.map((template) => [template.id, template.name]));
+    const templateNameById = new Map(
+      templates.map((template) => [template.id, template.name]),
+    );
 
     const topTemplates = templateCounts
       .map((entry) => ({
         name: entry.templateId
-          ? templateNameById.get(entry.templateId) ?? 'Plantilla sin nombre'
+          ? (templateNameById.get(entry.templateId) ?? 'Plantilla sin nombre')
           : 'Plantilla sin nombre',
         value: entry._count.templateId,
       }))
@@ -369,14 +381,12 @@ export class DashboardService {
       .sort((a, b) => b.value - a.value)
       .slice(0, 6);
 
-    const scatter = quotes
-      .slice(-36)
-      .map((quote) => ({
-        issuedAt: quote.issuedAt.toISOString(),
-        total: new Prisma.Decimal(quote.total).toNumber(),
-        status: quote.status,
-        itemsCount: quote._count.items,
-      }));
+    const scatter = quotes.slice(-36).map((quote) => ({
+      issuedAt: quote.issuedAt.toISOString(),
+      total: new Prisma.Decimal(quote.total).toNumber(),
+      status: quote.status,
+      itemsCount: quote._count.items,
+    }));
 
     const payload = {
       totals: {
@@ -476,10 +486,16 @@ export class DashboardService {
 
       months.push({
         label: monthDate.toLocaleDateString('es-CL', { month: 'short' }),
-        quoted: monthQuotes.reduce((acc, quote) => acc + new Prisma.Decimal(quote.total).toNumber(), 0),
+        quoted: monthQuotes.reduce(
+          (acc, quote) => acc + new Prisma.Decimal(quote.total).toNumber(),
+          0,
+        ),
         accepted: monthQuotes
           .filter((quote) => quote.status === QuoteStatus.ACCEPTED)
-          .reduce((acc, quote) => acc + new Prisma.Decimal(quote.total).toNumber(), 0),
+          .reduce(
+            (acc, quote) => acc + new Prisma.Decimal(quote.total).toNumber(),
+            0,
+          ),
       });
     }
 

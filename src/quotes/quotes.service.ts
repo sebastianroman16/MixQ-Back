@@ -6,13 +6,20 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { PaymentStatus, Prisma, QuoteStatus, TemplateType } from '@prisma/client';
+import {
+  PaymentStatus,
+  Prisma,
+  QuoteStatus,
+  TemplateType,
+} from '@prisma/client';
 import puppeteer from 'puppeteer';
+import { isAllowedRemoteAssetUrl } from '../common/security/remote-asset-url';
 import { PrismaService } from '../prisma/prisma.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateQuoteDto } from './dto/create-quote.dto';
 import { CreateQuoteFolderDto } from './dto/create-quote-folder.dto';
 import { CreateQuoteItemDto } from './dto/create-quote-item.dto';
+import { QuoteSummaryDto } from './dto/quote-summary.dto';
 import { UpdateQuoteDto } from './dto/update-quote.dto';
 import { renderQuotePdfHtml } from './pdf/quote-pdf.template';
 import {
@@ -45,6 +52,50 @@ type QuoteListQuery = {
   maxTotal?: string;
   folderId?: string;
   favoriteIds?: string;
+  onlyFavorites?: string;
+};
+
+type QuoteListPageResult = {
+  items: QuoteSummaryDto[];
+  total: number;
+  page: number;
+  pageSize: number;
+  totalPages: number;
+  folderCounts: Record<string, number>;
+};
+
+type QuoteComposerBootstrapResult = {
+  nextQuoteNumber: string;
+  recentQuotes: QuoteSummaryDto[];
+  draftQuotes: QuoteSummaryDto[];
+};
+
+type QuoteFolderRecord = {
+  id: string;
+  workspaceId: string;
+  name: string;
+  description: string | null;
+  color: string | null;
+  icon: string | null;
+  position: number | null;
+  isArchived: boolean;
+  createdByUserId: string | null;
+  createdAt: Date;
+  updatedAt: Date;
+};
+
+type QuoteFolderDelegate = {
+  findMany(args: unknown): Promise<QuoteFolderRecord[]>;
+  findFirst<T>(args: unknown): Promise<T | null>;
+  create(args: {
+    data: {
+      workspaceId: string;
+      name: string;
+      description: string | null;
+      createdByUserId: string;
+    };
+  }): Promise<QuoteFolderRecord>;
+  delete(args: { where: { id: string } }): Promise<QuoteFolderRecord>;
 };
 
 @Injectable()
@@ -56,7 +107,12 @@ export class QuotesService {
     private readonly subscriptionsService: SubscriptionsService,
   ) {}
 
-  async list(workspaceId: string) {
+  private get quoteFolderDelegate(): QuoteFolderDelegate {
+    return (this.prisma as unknown as { quoteFolder: QuoteFolderDelegate })
+      .quoteFolder;
+  }
+
+  async list(userId: string, workspaceId: string): Promise<QuoteSummaryDto[]> {
     const quotes = await this.prisma.quote.findMany({
       where: { workspaceId },
       orderBy: { createdAt: 'desc' },
@@ -83,18 +139,27 @@ export class QuotesService {
             items: true,
           },
         },
+        favorites: {
+          where: { userId },
+          select: { id: true },
+          take: 1,
+        },
       },
     });
 
     return quotes.map((quote) => this.toQuoteSummary(quote));
   }
 
-  async getComposerBootstrap(workspaceId: string) {
-    const profilingEnabled = process.env.PROFILE_QUOTES_COMPOSER_BOOTSTRAP === '1';
+  async getComposerBootstrap(
+    userId: string,
+    workspaceId: string,
+  ): Promise<QuoteComposerBootstrapResult> {
+    const profilingEnabled =
+      process.env.PROFILE_QUOTES_COMPOSER_BOOTSTRAP === '1';
     const startedAt = Date.now();
 
     const nextQuoteNumberStartedAt = Date.now();
-    const [nextQuoteNumber, recentQuotes] = await Promise.all([
+    const [nextQuoteNumber, recentQuotes, draftQuotes] = await Promise.all([
       this.getNextQuoteNumber(workspaceId),
       (async () => {
         const recentQuotesStartedAt = Date.now();
@@ -125,6 +190,11 @@ export class QuotesService {
                 items: true,
               },
             },
+            favorites: {
+              where: { userId },
+              select: { id: true },
+              take: 1,
+            },
           },
         });
 
@@ -133,6 +203,40 @@ export class QuotesService {
           elapsedMs: Date.now() - recentQuotesStartedAt,
         };
       })(),
+      this.prisma.quote.findMany({
+        where: { workspaceId, status: QuoteStatus.DRAFT },
+        orderBy: { updatedAt: 'desc' },
+        take: 5,
+        select: {
+          id: true,
+          folderId: true,
+          templateId: true,
+          quoteNumber: true,
+          title: true,
+          subtitle: true,
+          clientData: true,
+          total: true,
+          issuedAt: true,
+          validUntil: true,
+          sentAt: true,
+          viewedAt: true,
+          acceptedAt: true,
+          rejectedAt: true,
+          cancelledAt: true,
+          status: true,
+          paymentStatus: true,
+          _count: {
+            select: {
+              items: true,
+            },
+          },
+          favorites: {
+            where: { userId },
+            select: { id: true },
+            take: 1,
+          },
+        },
+      }),
     ]);
     const nextQuoteNumberMs = Date.now() - nextQuoteNumberStartedAt;
     const totalMs = Date.now() - startedAt;
@@ -154,11 +258,18 @@ export class QuotesService {
 
     return {
       nextQuoteNumber,
-      recentQuotes: recentQuotes.items.map((quote) => this.toQuoteSummary(quote)),
+      recentQuotes: recentQuotes.items.map((quote) =>
+        this.toQuoteSummary(quote),
+      ),
+      draftQuotes: draftQuotes.map((quote) => this.toQuoteSummary(quote)),
     };
   }
 
-  async listPage(workspaceId: string, query: QuoteListQuery) {
+  async listPage(
+    userId: string,
+    workspaceId: string,
+    query: QuoteListQuery,
+  ): Promise<QuoteListPageResult> {
     const page = this.parsePositiveInt(query.page, 1);
     const pageSize = Math.min(this.parsePositiveInt(query.pageSize, 18), 50);
     const favoriteIds = this.parseFavoriteIds(query.favoriteIds);
@@ -174,7 +285,12 @@ export class QuotesService {
       };
     }
 
-    const where = this.buildQuoteListWhere(workspaceId, query, favoriteIds);
+    const where = this.buildQuoteListWhere(
+      userId,
+      workspaceId,
+      query,
+      favoriteIds,
+    );
     const [items, total] = await this.prisma.$transaction([
       this.prisma.quote.findMany({
         where,
@@ -204,6 +320,11 @@ export class QuotesService {
               items: true,
             },
           },
+          favorites: {
+            where: { userId },
+            select: { id: true },
+            take: 1,
+          },
         },
       }),
       this.prisma.quote.count({ where }),
@@ -214,7 +335,7 @@ export class QuotesService {
     const safePage = Math.min(page, totalPages);
 
     if (safePage !== page) {
-      return this.listPage(workspaceId, {
+      return this.listPage(userId, workspaceId, {
         ...query,
         page: String(safePage),
         pageSize: String(pageSize),
@@ -231,8 +352,60 @@ export class QuotesService {
     };
   }
 
+  async listFavorites(userId: string, workspaceId: string) {
+    const favorites = await this.prisma.quoteFavorite.findMany({
+      where: { userId, workspaceId },
+      orderBy: { createdAt: 'desc' },
+      select: { quoteId: true },
+    });
+
+    return { ids: favorites.map((favorite) => favorite.quoteId) };
+  }
+
+  async setFavorite(
+    userId: string,
+    workspaceId: string,
+    quoteId: string,
+    isFavorite: boolean,
+  ) {
+    const quote = await this.prisma.quote.findFirst({
+      where: { id: quoteId, workspaceId },
+      select: { id: true },
+    });
+
+    if (!quote) {
+      throw new NotFoundException('Quote not found');
+    }
+
+    if (!isFavorite) {
+      await this.prisma.quoteFavorite.deleteMany({
+        where: { userId, workspaceId, quoteId },
+      });
+      return { quoteId, isFavorite: false };
+    }
+
+    await this.prisma.quoteFavorite.upsert({
+      where: {
+        userId_quoteId: {
+          userId,
+          quoteId,
+        },
+      },
+      create: {
+        userId,
+        workspaceId,
+        quoteId,
+      },
+      update: {
+        workspaceId,
+      },
+    });
+
+    return { quoteId, isFavorite: true };
+  }
+
   listFolders(workspaceId: string) {
-    return (this.prisma as any).quoteFolder.findMany({
+    return this.quoteFolderDelegate.findMany({
       where: { workspaceId, isArchived: false },
       orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
     });
@@ -249,7 +422,7 @@ export class QuotesService {
       throw new BadRequestException('El nombre de la carpeta es obligatorio.');
     }
 
-    const existing = await (this.prisma as any).quoteFolder.findFirst({
+    const existing = await this.quoteFolderDelegate.findFirst<{ id: string }>({
       where: {
         workspaceId,
         name: { equals: name, mode: 'insensitive' },
@@ -262,7 +435,7 @@ export class QuotesService {
     }
 
     try {
-      return await (this.prisma as any).quoteFolder.create({
+      return await this.quoteFolderDelegate.create({
         data: {
           workspaceId,
           name,
@@ -282,7 +455,7 @@ export class QuotesService {
   async removeFolder(workspaceId: string, folderId: string) {
     await this.assertFolderOwnership(workspaceId, folderId);
 
-    await (this.prisma as any).quoteFolder.delete({
+    await this.quoteFolderDelegate.delete({
       where: { id: folderId },
     });
 
@@ -305,7 +478,7 @@ export class QuotesService {
 
     return this.prisma.quote.update({
       where: { id },
-      data: { folderId } as any,
+      data: { folderId },
       include: {
         items: { orderBy: { position: 'asc' } },
       },
@@ -374,89 +547,114 @@ export class QuotesService {
 
     const totals = this.calculateTotals(items, dto.discount, dto.taxRate);
     const now = new Date();
+    const explicitQuoteNumber = dto.quoteNumber
+      ? this.normalizeQuoteNumber(dto.quoteNumber)
+      : null;
+    const attempts = explicitQuoteNumber ? 1 : 3;
 
-    return this.prisma.quote.create({
-      data: {
-        userId,
-        workspaceId,
-        templateId: template?.id ?? null,
-        folderId: null,
-        status: QuoteStatus.DRAFT,
-        paymentStatus: dto.paymentStatus ?? PaymentStatus.PENDING,
-        quoteNumber: dto.quoteNumber
-          ? this.normalizeQuoteNumber(dto.quoteNumber)
-          : await this.getNextQuoteNumber(workspaceId),
-        title: dto.title?.trim() || 'Cotizacion',
-        subtitle: dto.subtitle,
-        description: dto.description,
-        clientData: this.normalizeDraftClientData(dto.clientData),
-        eventData: dto.eventData,
-        paymentData: dto.paymentData,
-        contactData: dto.contactData,
-        logoUrl: dto.logoUrl,
-        termsText: dto.termsText,
-        senderProfileSnapshot: senderProfile ?? undefined,
-        subtotal: totals.subtotal,
-        discount: totals.discount,
-        taxRate: totals.taxRate,
-        netTotal: totals.netTotal,
-        taxTotal: totals.taxTotal,
-        total: totals.total,
-        issuedAt,
-        validUntil,
-        statusHistory: {
-          create: {
-            fromStatus: null,
-            toStatus: QuoteStatus.DRAFT,
-            changedBy: userId,
-            source: 'INTERNAL',
-            changedAt: now,
-          },
-        },
-        sections: template
-          ? {
-              create: template.sections.map((section) => ({
-                title: section.title,
-                type: section.type,
-                position: section.position,
-                items: {
-                  create: section.items.map((item) => ({
-                    label: item.label,
-                    value: item.value,
-                    type: item.type,
-                    position: item.position,
+    for (let attempt = 0; attempt < attempts; attempt += 1) {
+      const quoteNumber =
+        explicitQuoteNumber ?? (await this.getNextQuoteNumber(workspaceId));
+
+      try {
+        return await this.prisma.quote.create({
+          data: {
+            userId,
+            workspaceId,
+            templateId: template?.id ?? null,
+            folderId: null,
+            status: QuoteStatus.DRAFT,
+            paymentStatus: dto.paymentStatus ?? PaymentStatus.PENDING,
+            quoteNumber,
+            title: dto.title?.trim() || 'Cotizacion',
+            subtitle: dto.subtitle,
+            description: dto.description,
+            clientData: this.normalizeDraftClientData(dto.clientData),
+            eventData: dto.eventData,
+            paymentData: dto.paymentData,
+            contactData: dto.contactData,
+            logoUrl: dto.logoUrl,
+            termsText: dto.termsText,
+            senderProfileSnapshot: senderProfile ?? undefined,
+            subtotal: totals.subtotal,
+            discount: totals.discount,
+            taxRate: totals.taxRate,
+            netTotal: totals.netTotal,
+            taxTotal: totals.taxTotal,
+            total: totals.total,
+            issuedAt,
+            validUntil,
+            statusHistory: {
+              create: {
+                fromStatus: null,
+                toStatus: QuoteStatus.DRAFT,
+                changedBy: userId,
+                source: 'INTERNAL',
+                changedAt: now,
+              },
+            },
+            sections: template
+              ? {
+                  create: template.sections.map((section) => ({
+                    title: section.title,
+                    type: section.type,
+                    position: section.position,
+                    items: {
+                      create: section.items.map((item) => ({
+                        label: item.label,
+                        value: item.value,
+                        type: item.type,
+                        position: item.position,
+                      })),
+                    },
                   })),
-                },
-              })),
-            }
-          : undefined,
-        items: items.length
-          ? {
-              create: items.map((item, index) => ({
-                title: item.title,
-                description: item.description,
-                quantity: item.quantity,
-                unitPrice: new Prisma.Decimal(item.unitPrice),
-                total: new Prisma.Decimal(item.unitPrice).mul(item.quantity),
-                position: index,
-                serviceId: item.serviceId,
-              })),
-            }
-          : undefined,
-      } as any,
-      include: {
-        sections: {
-          orderBy: { position: 'asc' },
+                }
+              : undefined,
+            items: items.length
+              ? {
+                  create: items.map((item, index) => ({
+                    title: item.title,
+                    description: item.description,
+                    quantity: item.quantity,
+                    unitPrice: new Prisma.Decimal(item.unitPrice),
+                    total: new Prisma.Decimal(item.unitPrice).mul(
+                      item.quantity,
+                    ),
+                    position: index,
+                    serviceId: item.serviceId,
+                  })),
+                }
+              : undefined,
+          },
           include: {
+            sections: {
+              orderBy: { position: 'asc' },
+              include: {
+                items: { orderBy: { position: 'asc' } },
+              },
+            },
             items: { orderBy: { position: 'asc' } },
           },
-        },
-        items: { orderBy: { position: 'asc' } },
-      },
-    });
+        });
+      } catch (error) {
+        if (!this.isQuoteNumberConflict(error)) {
+          throw error;
+        }
+        if (explicitQuoteNumber) {
+          throw new ConflictException('Quote number already exists');
+        }
+      }
+    }
+
+    throw new ConflictException('Could not assign a unique quote number');
   }
 
-  async update(userId: string, workspaceId: string, id: string, dto: UpdateQuoteDto) {
+  async update(
+    userId: string,
+    workspaceId: string,
+    id: string,
+    dto: UpdateQuoteDto,
+  ) {
     const quote = await this.prisma.quote.findFirst({
       where: { id, workspaceId },
       include: { items: true },
@@ -519,8 +717,13 @@ export class QuotesService {
           workspaceId,
           status: nextStatus,
           paymentStatus: dto.paymentStatus,
-          quoteNumber: dto.quoteNumber ? this.normalizeQuoteNumber(dto.quoteNumber) : undefined,
-          title: dto.title !== undefined ? dto.title.trim() || 'Cotizacion' : undefined,
+          quoteNumber: dto.quoteNumber
+            ? this.normalizeQuoteNumber(dto.quoteNumber)
+            : undefined,
+          title:
+            dto.title !== undefined
+              ? dto.title.trim() || 'Cotizacion'
+              : undefined,
           subtitle: dto.subtitle,
           description: dto.description,
           clientData: dto.clientData
@@ -582,7 +785,12 @@ export class QuotesService {
     });
   }
 
-  async changeStatus(userId: string, workspaceId: string, id: string, status: QuoteStatus) {
+  async changeStatus(
+    userId: string,
+    workspaceId: string,
+    id: string,
+    status: QuoteStatus,
+  ) {
     const quote = await this.prisma.quote.findFirst({
       where: { id, workspaceId },
     });
@@ -663,14 +871,17 @@ export class QuotesService {
             userId,
             workspaceId,
             templateId: source.templateId,
-            folderId: (source as any).folderId ?? null,
+            folderId: source.folderId ?? null,
             status: QuoteStatus.DRAFT,
             paymentStatus: source.paymentStatus ?? PaymentStatus.PENDING,
             quoteNumber: nextQuoteNumber,
             title: source.title,
             subtitle: source.subtitle,
             description: source.description,
-            clientData: this.toRequiredInputJson(source.clientData, 'clientData'),
+            clientData: this.toRequiredInputJson(
+              source.clientData,
+              'clientData',
+            ),
             eventData: this.toNullableInputJson(source.eventData),
             paymentData: this.toNullableInputJson(source.paymentData),
             contactData: this.toNullableInputJson(source.contactData),
@@ -725,7 +936,7 @@ export class QuotesService {
                 serviceId: item.serviceId,
               })),
             },
-          } as any,
+          },
           include: {
             sections: {
               orderBy: { position: 'asc' },
@@ -750,7 +961,9 @@ export class QuotesService {
   }
 
   async remove(workspaceId: string, id: string) {
-    const quote = await this.prisma.quote.findFirst({ where: { id, workspaceId } });
+    const quote = await this.prisma.quote.findFirst({
+      where: { id, workspaceId },
+    });
     if (!quote) {
       throw new NotFoundException('Quote not found');
     }
@@ -795,6 +1008,23 @@ export class QuotesService {
 
     try {
       const page = await browser.newPage();
+      page.setDefaultTimeout(30_000);
+      page.setDefaultNavigationTimeout(30_000);
+      await page.setRequestInterception(true);
+      page.on('request', (request) => {
+        const requestUrl = request.url();
+        if (
+          requestUrl === 'about:blank' ||
+          requestUrl.startsWith('data:') ||
+          requestUrl.startsWith('blob:') ||
+          isAllowedRemoteAssetUrl(requestUrl)
+        ) {
+          void request.continue();
+          return;
+        }
+
+        void request.abort();
+      });
       await page.setContent(html, { waitUntil: 'networkidle0' });
       const pdfBuffer = await page.pdf({
         format: 'A4',
@@ -818,7 +1048,10 @@ export class QuotesService {
     try {
       return calculateQuoteTotals(items, discount, taxRate);
     } catch (error) {
-      if (error instanceof Error && error.message === DISCOUNT_EXCEEDS_SUBTOTAL) {
+      if (
+        error instanceof Error &&
+        error.message === DISCOUNT_EXCEEDS_SUBTOTAL
+      ) {
         throw new BadRequestException(DISCOUNT_EXCEEDS_SUBTOTAL);
       }
       throw error;
@@ -830,7 +1063,9 @@ export class QuotesService {
     items: { serviceId?: string | null }[],
   ) {
     const serviceIds = Array.from(
-      new Set(items.map((item) => item.serviceId).filter((id): id is string => !!id)),
+      new Set(
+        items.map((item) => item.serviceId).filter((id): id is string => !!id),
+      ),
     );
 
     if (serviceIds.length === 0) {
@@ -901,7 +1136,9 @@ export class QuotesService {
 
   private async getNextQuoteNumber(workspaceId: string): Promise<string> {
     try {
-      const rows = await this.prisma.$queryRaw<Array<{ maxNumber: bigint | number | null }>>(
+      const rows = await this.prisma.$queryRaw<
+        Array<{ maxNumber: bigint | number | null }>
+      >(
         Prisma.sql`
           SELECT COALESCE(
             MAX(
@@ -964,16 +1201,20 @@ export class QuotesService {
       }));
   }
 
-  private isMeaningfulDraftItem(item: Partial<CreateQuoteItemDto> | null | undefined): boolean {
+  private isMeaningfulDraftItem(
+    item: Partial<CreateQuoteItemDto> | null | undefined,
+  ): boolean {
     if (!item) {
       return false;
     }
 
-    return !!item.serviceId
-      || !!item.title?.trim()
-      || !!item.description?.trim()
-      || Number(item.unitPrice ?? 0) > 0
-      || Number(item.quantity ?? 0) > 1;
+    return (
+      !!item.serviceId ||
+      !!item.title?.trim() ||
+      !!item.description?.trim() ||
+      Number(item.unitPrice ?? 0) > 0 ||
+      Number(item.quantity ?? 0) > 1
+    );
   }
 
   private normalizeDraftClientData(value?: Record<string, string>) {
@@ -994,7 +1235,10 @@ export class QuotesService {
     const safeIssuedAt = this.parseDateOrFallback(issuedAt, now);
     const fallbackValidUntil = new Date(safeIssuedAt);
     fallbackValidUntil.setDate(fallbackValidUntil.getDate() + 7);
-    const safeValidUntil = this.parseDateOrFallback(validUntil, fallbackValidUntil);
+    const safeValidUntil = this.parseDateOrFallback(
+      validUntil,
+      fallbackValidUntil,
+    );
 
     if (safeIssuedAt.getTime() > safeValidUntil.getTime()) {
       throw new BadRequestException('validUntil must be after issuedAt');
@@ -1028,7 +1272,10 @@ export class QuotesService {
     return Math.round(parsed);
   }
 
-  private normalizeNonNegativeInteger(value: unknown, fallback: number): number {
+  private normalizeNonNegativeInteger(
+    value: unknown,
+    fallback: number,
+  ): number {
     const parsed = Number(value);
     if (!Number.isFinite(parsed) || parsed < 0) {
       return fallback;
@@ -1037,7 +1284,7 @@ export class QuotesService {
   }
 
   private async assertFolderOwnership(workspaceId: string, folderId: string) {
-    const folder = await (this.prisma as any).quoteFolder.findFirst({
+    const folder = await this.quoteFolderDelegate.findFirst<{ id: string }>({
       where: { id: folderId, workspaceId, isArchived: false },
       select: { id: true },
     });
@@ -1065,7 +1312,9 @@ export class QuotesService {
     return target.includes('workspaceId') && target.includes('quoteNumber');
   }
 
-  private normalizeQuoteResponse<T extends { quoteNumber: string }>(quote: T): T {
+  private normalizeQuoteResponse<T extends { quoteNumber: string }>(
+    quote: T,
+  ): T {
     return {
       ...quote,
       quoteNumber: this.normalizeQuoteNumber(quote.quoteNumber),
@@ -1086,18 +1335,23 @@ export class QuotesService {
   }
 
   private normalizeQuoteNumber(value: unknown): string {
-    const raw = String(value ?? "").trim();
+    const raw =
+      typeof value === 'string' ||
+      typeof value === 'number' ||
+      typeof value === 'bigint'
+        ? String(value).trim()
+        : '';
     if (!raw) {
-      return "";
+      return '';
     }
 
-    const digits = raw.replace(/\D/g, "");
+    const digits = raw.replace(/\D/g, '');
     if (!digits) {
       return raw;
     }
 
     const normalized = String(Number(digits));
-    return normalized === "NaN" ? raw : normalized;
+    return normalized === 'NaN' ? raw : normalized;
   }
 
   private isWorkspaceFolderNameConflict(error: unknown): boolean {
@@ -1135,6 +1389,7 @@ export class QuotesService {
     status: QuoteStatus;
     paymentStatus: PaymentStatus;
     _count: { items: number };
+    favorites?: Array<{ id: string }>;
   }) {
     return {
       id: quote.id,
@@ -1155,10 +1410,14 @@ export class QuotesService {
       status: quote.status,
       paymentStatus: quote.paymentStatus,
       itemsCount: quote._count.items,
+      isFavorite: (quote.favorites?.length ?? 0) > 0,
     };
   }
 
-  private parsePositiveInt(value: string | undefined, fallback: number): number {
+  private parsePositiveInt(
+    value: string | undefined,
+    fallback: number,
+  ): number {
     const parsed = Number.parseInt(value ?? '', 10);
     return Number.isFinite(parsed) && parsed > 0 ? parsed : fallback;
   }
@@ -1175,6 +1434,7 @@ export class QuotesService {
   }
 
   private buildQuoteListWhere(
+    userId: string,
     workspaceId: string,
     query: QuoteListQuery,
     favoriteIds: string[],
@@ -1201,6 +1461,15 @@ export class QuotesService {
 
     if (favoriteIds.length > 0) {
       where.id = { in: favoriteIds };
+    }
+
+    if (query.onlyFavorites === 'true') {
+      where.favorites = {
+        some: {
+          userId,
+          workspaceId,
+        },
+      };
     }
 
     if (search) {
@@ -1247,8 +1516,8 @@ export class QuotesService {
     const hasDateTo = !!dateTo && !Number.isNaN(dateTo.getTime());
     if (hasDateFrom || hasDateTo) {
       where.issuedAt = {
-        ...(hasDateFrom ? { gte: dateFrom! } : {}),
-        ...(hasDateTo ? { lte: dateTo! } : {}),
+        ...(hasDateFrom ? { gte: dateFrom } : {}),
+        ...(hasDateTo ? { lte: dateTo } : {}),
       };
     }
 
@@ -1256,15 +1525,17 @@ export class QuotesService {
     const hasMaxTotal = maxTotal !== null && Number.isFinite(maxTotal);
     if (hasMinTotal || hasMaxTotal) {
       where.total = {
-        ...(hasMinTotal ? { gte: new Prisma.Decimal(minTotal!) } : {}),
-        ...(hasMaxTotal ? { lte: new Prisma.Decimal(maxTotal!) } : {}),
+        ...(hasMinTotal ? { gte: new Prisma.Decimal(minTotal) } : {}),
+        ...(hasMaxTotal ? { lte: new Prisma.Decimal(maxTotal) } : {}),
       } as Prisma.DecimalFilter;
     }
 
     return where;
   }
 
-  private mapVisibleStatus(status?: string): QuoteStatus | Prisma.EnumQuoteStatusFilter | undefined {
+  private mapVisibleStatus(
+    status?: string,
+  ): QuoteStatus | Prisma.EnumQuoteStatusFilter | undefined {
     switch (status) {
       case 'DRAFT':
         return QuoteStatus.DRAFT;
@@ -1279,7 +1550,9 @@ export class QuotesService {
     }
   }
 
-  private async listFolderCounts(workspaceId: string): Promise<Record<string, number>> {
+  private async listFolderCounts(
+    workspaceId: string,
+  ): Promise<Record<string, number>> {
     const grouped = await this.prisma.quote.groupBy({
       by: ['folderId'],
       where: { workspaceId },

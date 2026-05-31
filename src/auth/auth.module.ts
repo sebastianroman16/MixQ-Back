@@ -3,6 +3,7 @@ import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
+import { AuthRateLimitGuard } from './guards/auth-rate-limit.guard';
 import { JwtAuthGuard } from './guards/jwt-auth.guard';
 import { WorkspaceRoleGuard } from './guards/workspace-role.guard';
 
@@ -14,7 +15,7 @@ import { WorkspaceRoleGuard } from './guards/workspace-role.guard';
         const expiresInRaw = configService.get<string>('JWT_EXPIRES_IN', '1d');
         const expiresIn = parseExpiresIn(expiresInRaw);
         return {
-          secret: configService.get<string>('JWT_SECRET', 'dev-secret'),
+          secret: getJwtSecret(configService),
           signOptions: {
             expiresIn,
           },
@@ -23,10 +24,31 @@ import { WorkspaceRoleGuard } from './guards/workspace-role.guard';
     }),
   ],
   controllers: [AuthController],
-  providers: [AuthService, JwtAuthGuard, WorkspaceRoleGuard],
+  providers: [
+    AuthService,
+    AuthRateLimitGuard,
+    JwtAuthGuard,
+    WorkspaceRoleGuard,
+  ],
   exports: [JwtModule, JwtAuthGuard, WorkspaceRoleGuard, AuthService],
 })
 export class AuthModule {}
+
+function getJwtSecret(configService: ConfigService): string {
+  const secret = configService.get<string>('JWT_SECRET')?.trim();
+  const isProduction = configService.get<string>('NODE_ENV') === 'production';
+
+  if (
+    isProduction &&
+    (!secret || secret === 'dev-secret' || secret.length < 32)
+  ) {
+    throw new Error(
+      'JWT_SECRET must be set to a strong value with at least 32 characters in production',
+    );
+  }
+
+  return secret || 'dev-secret';
+}
 
 function parseExpiresIn(value: string): number {
   if (/^\d+$/.test(value)) {

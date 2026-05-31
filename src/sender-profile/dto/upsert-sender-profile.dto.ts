@@ -1,4 +1,5 @@
 import { IsEmail, IsOptional, IsString, MaxLength } from 'class-validator';
+import { IsLogoUrl } from '../../common/validators/logo-url.validator';
 
 export class UpsertSenderProfileDto {
   @IsString()
@@ -35,6 +36,7 @@ export class UpsertSenderProfileDto {
 
   @IsOptional()
   @IsString()
+  @IsLogoUrl({ maxBytes: 2 * 1024 * 1024 })
   logoUrl?: string;
 
   @IsOptional()

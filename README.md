@@ -47,6 +47,17 @@ JWT_EXPIRES_IN="1d"
 FRONTEND_URL="http://localhost:4200"
 RESEND_API_KEY="re_xxxxxxxxxxxxx"
 RESEND_FROM_EMAIL="no-reply@tu-dominio-verificado.com"
+
+# billing / Flow
+PUBLIC_API_URL="https://api.tu-dominio.com"
+FLOW_API_BASE_URL="https://sandbox.flow.cl/api"
+FLOW_API_KEY="flow_api_key"
+FLOW_SECRET_KEY="flow_secret_key"
+FLOW_PRO_PLAN_ID="mixq_pro_monthly"
+FLOW_BUSINESS_PLAN_ID="mixq_business_monthly"
+MIXQ_PRO_MONTHLY_PRICE_CLP="14990"
+MIXQ_BUSINESS_MONTHLY_PRICE_CLP="39990"
+BILLING_CRON_SECRET="usa-un-secreto-largo"
 ```
 
 Notas de invitaciones por email:
@@ -55,6 +66,14 @@ Notas de invitaciones por email:
 - `RESEND_FROM_EMAIL` debe pertenecer a un dominio verificado en Resend.
 - Si falta `RESEND_API_KEY`, la invitacion se crea igual y se devuelve `invitationUrl` como fallback.
 - El enlace apunta a `${FRONTEND_URL}/invitacion/:token`.
+
+Notas de suscripciones:
+
+- El backend no guarda tarjetas; Flow recibe y tokeniza el medio de pago.
+- `PUBLIC_API_URL` debe ser una URL publica accesible por Flow para callbacks.
+- Configura en Flow los planes `FLOW_PRO_PLAN_ID` y `FLOW_BUSINESS_PLAN_ID` como planes mensuales.
+- El callback de invoices debe apuntar a `POST ${PUBLIC_API_URL}/subscriptions/flow/invoice-callback`.
+- Ejecuta periodicamente `POST /subscriptions/cron/reconcile-overdue` con header `x-billing-cron-secret` para degradar suscripciones vencidas fuera del periodo de gracia.
 
 ## Comandos utiles
 
@@ -131,6 +150,12 @@ Base URL local: `http://localhost:3000`
 ### Subscriptions
 
 - `GET /subscriptions/me`
+- `GET /subscriptions/plans`
+- `POST /subscriptions/checkout`
+- `POST /subscriptions/cancel`
+- `POST /subscriptions/flow/register-return`
+- `POST /subscriptions/flow/invoice-callback`
+- `POST /subscriptions/cron/reconcile-overdue`
 
 ### Stats
 

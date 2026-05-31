@@ -22,7 +22,11 @@ describe('calculateQuoteTotals', () => {
   });
 
   it('supports zero tax rate', () => {
-    const totals = calculateQuoteTotals([{ quantity: 3, unitPrice: 2000 }], 500, 0);
+    const totals = calculateQuoteTotals(
+      [{ quantity: 3, unitPrice: 2000 }],
+      500,
+      0,
+    );
 
     expect(totals.subtotal.toNumber()).toBe(6000);
     expect(totals.netTotal.toNumber()).toBe(5500);

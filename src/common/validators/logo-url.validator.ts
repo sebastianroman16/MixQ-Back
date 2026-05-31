@@ -1,4 +1,5 @@
 import { registerDecorator, ValidationOptions } from 'class-validator';
+import { isAllowedRemoteAssetUrl } from '../security/remote-asset-url';
 
 type LogoUrlValidatorOptions = {
   maxBytes?: number;
@@ -22,7 +23,7 @@ export function IsLogoUrl(
           }
 
           if (value.startsWith('http://') || value.startsWith('https://')) {
-            return true;
+            return isAllowedRemoteAssetUrl(value);
           }
 
           if (!value.startsWith('data:')) {

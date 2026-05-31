@@ -1,12 +1,21 @@
-import { IsInt, IsOptional, IsString, IsUUID, Min } from 'class-validator';
+import {
+  IsInt,
+  IsOptional,
+  IsString,
+  IsUUID,
+  MaxLength,
+  Min,
+} from 'class-validator';
 
 export class CreateQuoteItemDto {
   @IsOptional()
   @IsString()
+  @MaxLength(160)
   title?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(1200)
   description?: string;
 
   @IsOptional()

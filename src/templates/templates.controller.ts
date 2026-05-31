@@ -61,7 +61,10 @@ export class TemplatesController {
 
   @Delete(':id')
   @RequireWorkspaceRoles(...WORKSPACE_CAPABILITY_ROLES.editTemplates)
-  remove(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  remove(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
     return this.templatesService.remove(user.workspaceId, id);
   }
 

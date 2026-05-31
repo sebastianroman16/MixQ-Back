@@ -1,13 +1,15 @@
 import {
   IsArray,
+  ArrayMaxSize,
   IsDateString,
   IsEnum,
   IsInt,
-  IsNumber,
   IsObject,
+  IsNumber,
   IsOptional,
   IsString,
   IsUUID,
+  MaxLength,
   Min,
   ValidateNested,
 } from 'class-validator';
@@ -23,18 +25,22 @@ export class CreateQuoteDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(40)
   quoteNumber?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(160)
   title?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(240)
   subtitle?: string;
 
   @IsOptional()
   @IsString()
+  @MaxLength(3000)
   description?: string;
 
   @IsOptional()
@@ -60,10 +66,12 @@ export class CreateQuoteDto {
 
   @IsOptional()
   @IsString()
+  @MaxLength(4000)
   termsText?: string;
 
   @IsOptional()
   @IsArray()
+  @ArrayMaxSize(100)
   @ValidateNested({ each: true })
   @Type(() => CreateQuoteItemDto)
   items?: CreateQuoteItemDto[];

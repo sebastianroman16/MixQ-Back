@@ -9,8 +9,9 @@ import { Prisma, QuoteStatus, WorkspaceRole } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'crypto';
 import { AuthUser } from '../auth/types/auth-user';
-import { SubscriptionsService } from '../subscriptions/subscriptions.service';
+import { InvitationMailService } from '../mail/invitation-mail.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateWorkspaceInvitationDto } from './dto/create-workspace-invitation.dto';
 import { UpdateWorkspaceMemberRoleDto } from './dto/update-workspace-member-role.dto';
 
@@ -23,6 +24,7 @@ export class WorkspaceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly subscriptionsService: SubscriptionsService,
+    private readonly invitationMailService: InvitationMailService,
   ) {}
 
   async getMe(user: AuthUser) {
@@ -98,7 +100,9 @@ export class WorkspaceService {
       throw new ForbiddenException({ code: 'FORBIDDEN_ROLE' });
     }
 
-    await this.subscriptionsService.assertCanAddWorkspaceMember(user.workspaceId);
+    await this.subscriptionsService.assertCanAddWorkspaceMember(
+      user.workspaceId,
+    );
 
     const normalizedEmail = dto.email.trim().toLowerCase();
     const normalizedName = dto.name.trim();
@@ -125,6 +129,20 @@ export class WorkspaceService {
 
     const temporaryPassword = this.generateTemporaryPassword();
     const temporaryPasswordHash = await bcrypt.hash(temporaryPassword, 10);
+    const [workspace, inviter] = await Promise.all([
+      this.prisma.workspace.findUnique({
+        where: { id: user.workspaceId },
+        select: { name: true },
+      }),
+      this.prisma.user.findUnique({
+        where: { id: user.id },
+        select: { name: true, email: true },
+      }),
+    ]);
+
+    if (!workspace) {
+      throw new NotFoundException('Workspace not found');
+    }
 
     const { invitation } = await this.prisma.$transaction(async (tx) => {
       const existingUser = await tx.user.findFirst({
@@ -180,11 +198,28 @@ export class WorkspaceService {
       return { invitation };
     });
 
-    return {
+    const emailDelivery =
+      await this.invitationMailService.sendWorkspaceInvitationEmail({
+        to: normalizedEmail,
+        invitedUserName: normalizedName,
+        workspaceName: workspace.name,
+        invitedByName: inviter?.name ?? inviter?.email ?? null,
+        roleLabel: dto.role,
+        token: invitation.token,
+        temporaryPassword,
+      });
+
+    const response: Record<string, unknown> = {
       ...invitation,
       invitationUrl: this.buildInvitationUrl(invitation.token),
-      temporaryPassword,
+      emailDelivery,
     };
+
+    if (process.env.NODE_ENV !== 'production') {
+      response.temporaryPassword = temporaryPassword;
+    }
+
+    return response;
   }
 
   private generateTemporaryPassword() {
@@ -222,7 +257,9 @@ export class WorkspaceService {
       throw new ForbiddenException({ code: 'FORBIDDEN_ROLE' });
     }
 
-    await this.subscriptionsService.assertCanAddWorkspaceMember(invitation.workspaceId);
+    await this.subscriptionsService.assertCanAddWorkspaceMember(
+      invitation.workspaceId,
+    );
 
     await this.prisma.$transaction(async (tx) => {
       await tx.workspaceMember.upsert({
@@ -282,7 +319,10 @@ export class WorkspaceService {
       throw new NotFoundException('Member not found');
     }
 
-    if (member.role === WorkspaceRole.OWNER && dto.role !== WorkspaceRole.OWNER) {
+    if (
+      member.role === WorkspaceRole.OWNER &&
+      dto.role !== WorkspaceRole.OWNER
+    ) {
       await this.assertMoreThanOneOwner(user.workspaceId, member.id);
     }
 
@@ -366,7 +406,12 @@ export class WorkspaceService {
       },
     };
 
-    const [createdCounts, statusCounts, staleDraftCounts, pendingAfterSendCounts] = await Promise.all([
+    const [
+      createdCounts,
+      statusCounts,
+      staleDraftCounts,
+      pendingAfterSendCounts,
+    ] = await Promise.all([
       this.prisma.quote.groupBy({
         by: ['userId'],
         where: baseWhere,
@@ -410,17 +455,30 @@ export class WorkspaceService {
       staleDraftCounts.map((entry) => [entry.userId, entry._count.userId]),
     );
     const pendingAfterSendByUserId = new Map(
-      pendingAfterSendCounts.map((entry) => [entry.userId, entry._count.userId]),
+      pendingAfterSendCounts.map((entry) => [
+        entry.userId,
+        entry._count.userId,
+      ]),
     );
 
     return {
       items: members.map((member) => {
         const created = createdByUserId.get(member.userId) ?? 0;
-        const accepted = statusByUserIdAndStatus.get(`${member.userId}:${QuoteStatus.ACCEPTED}`) ?? 0;
-        const rejected = statusByUserIdAndStatus.get(`${member.userId}:${QuoteStatus.REJECTED}`) ?? 0;
-        const cancelled = statusByUserIdAndStatus.get(`${member.userId}:${QuoteStatus.CANCELLED}`) ?? 0;
+        const accepted =
+          statusByUserIdAndStatus.get(
+            `${member.userId}:${QuoteStatus.ACCEPTED}`,
+          ) ?? 0;
+        const rejected =
+          statusByUserIdAndStatus.get(
+            `${member.userId}:${QuoteStatus.REJECTED}`,
+          ) ?? 0;
+        const cancelled =
+          statusByUserIdAndStatus.get(
+            `${member.userId}:${QuoteStatus.CANCELLED}`,
+          ) ?? 0;
         const staleDraft = staleDraftByUserId.get(member.userId) ?? 0;
-        const pendingAfterSend = pendingAfterSendByUserId.get(member.userId) ?? 0;
+        const pendingAfterSend =
+          pendingAfterSendByUserId.get(member.userId) ?? 0;
         const noOutcome = cancelled + staleDraft + pendingAfterSend;
 
         return {
@@ -516,19 +574,22 @@ export class WorkspaceService {
     const createdToAcceptedHours: number[] = [];
     const createdToRejectedHours: number[] = [];
 
-    const bySeller = new Map<string, {
-      userId: string;
-      name: string;
-      email: string;
-      role: WorkspaceRole;
-      createdCount: number;
-      sentCount: number;
-      acceptedCount: number;
-      rejectedCount: number;
-      noOutcomeCount: number;
-      quotedRevenue: number;
-      acceptedRevenue: number;
-    }>();
+    const bySeller = new Map<
+      string,
+      {
+        userId: string;
+        name: string;
+        email: string;
+        role: WorkspaceRole;
+        createdCount: number;
+        sentCount: number;
+        acceptedCount: number;
+        rejectedCount: number;
+        noOutcomeCount: number;
+        quotedRevenue: number;
+        acceptedRevenue: number;
+      }
+    >();
 
     for (const member of members) {
       bySeller.set(member.userId, {
@@ -548,9 +609,14 @@ export class WorkspaceService {
 
     const isNoOutcome = (quote: (typeof quotes)[number]) => {
       const expiredOpen =
-        (quote.status === QuoteStatus.SENT || quote.status === QuoteStatus.VIEWED) &&
+        (quote.status === QuoteStatus.SENT ||
+          quote.status === QuoteStatus.VIEWED) &&
         quote.validUntil < now;
-      return quote.status === QuoteStatus.CANCELLED || quote.status === QuoteStatus.DRAFT || expiredOpen;
+      return (
+        quote.status === QuoteStatus.CANCELLED ||
+        quote.status === QuoteStatus.DRAFT ||
+        expiredOpen
+      );
     };
 
     for (const quote of quotes) {
@@ -579,18 +645,27 @@ export class WorkspaceService {
       }
 
       if (quote.sentAt) {
-        createdToSentHours.push(this.hoursBetween(quote.issuedAt, quote.sentAt));
+        createdToSentHours.push(
+          this.hoursBetween(quote.issuedAt, quote.sentAt),
+        );
       }
       if (quote.acceptedAt) {
-        createdToAcceptedHours.push(this.hoursBetween(quote.issuedAt, quote.acceptedAt));
+        createdToAcceptedHours.push(
+          this.hoursBetween(quote.issuedAt, quote.acceptedAt),
+        );
       }
       if (quote.rejectedAt) {
-        createdToRejectedHours.push(this.hoursBetween(quote.issuedAt, quote.rejectedAt));
+        createdToRejectedHours.push(
+          this.hoursBetween(quote.issuedAt, quote.rejectedAt),
+        );
       }
 
       if (seller) {
         seller.createdCount += 1;
-        if (quote.status === QuoteStatus.SENT || quote.status === QuoteStatus.VIEWED) {
+        if (
+          quote.status === QuoteStatus.SENT ||
+          quote.status === QuoteStatus.VIEWED
+        ) {
           seller.sentCount += 1;
         }
         if (quote.status === QuoteStatus.ACCEPTED) {
@@ -628,10 +703,16 @@ export class WorkspaceService {
       quotesAccepted: funnel.accepted,
       quotesRejected: funnel.rejected,
       quotesNoOutcome: quotes.filter(isNoOutcome).length,
-      quotedRevenue: quotes.reduce((acc, quote) => acc + new Prisma.Decimal(quote.total).toNumber(), 0),
+      quotedRevenue: quotes.reduce(
+        (acc, quote) => acc + new Prisma.Decimal(quote.total).toNumber(),
+        0,
+      ),
       acceptedRevenue: quotes
         .filter((quote) => quote.status === QuoteStatus.ACCEPTED)
-        .reduce((acc, quote) => acc + new Prisma.Decimal(quote.total).toNumber(), 0),
+        .reduce(
+          (acc, quote) => acc + new Prisma.Decimal(quote.total).toNumber(),
+          0,
+        ),
     };
 
     const payload = {
@@ -650,14 +731,19 @@ export class WorkspaceService {
       revenueBySeller: Array.from(bySeller.values())
         .map((seller) => ({
           ...seller,
-          acceptanceRate: seller.createdCount > 0 ? seller.acceptedCount / seller.createdCount : 0,
+          acceptanceRate:
+            seller.createdCount > 0
+              ? seller.acceptedCount / seller.createdCount
+              : 0,
         }))
         .sort((a, b) => b.acceptedRevenue - a.acceptedRevenue),
       trends,
       forecast: {
         openWeightedForecast,
         forecastCoverageRatio:
-          totals.quotedRevenue > 0 ? openWeightedForecast / totals.quotedRevenue : 0,
+          totals.quotedRevenue > 0
+            ? openWeightedForecast / totals.quotedRevenue
+            : 0,
       },
     };
 
@@ -755,7 +841,10 @@ export class WorkspaceService {
     }
 
     const sorted = values.slice().sort((a, b) => a - b);
-    const index = Math.min(sorted.length - 1, Math.max(0, Math.round((percentile / 100) * (sorted.length - 1))));
+    const index = Math.min(
+      sorted.length - 1,
+      Math.max(0, Math.round((percentile / 100) * (sorted.length - 1))),
+    );
     return sorted[index];
   }
 
@@ -773,7 +862,10 @@ export class WorkspaceService {
     return date;
   }
 
-  private async assertMoreThanOneOwner(workspaceId: string, excludingMemberId: string) {
+  private async assertMoreThanOneOwner(
+    workspaceId: string,
+    excludingMemberId: string,
+  ) {
     const ownerCount = await this.prisma.workspaceMember.count({
       where: {
         workspaceId,

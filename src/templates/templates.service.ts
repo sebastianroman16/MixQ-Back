@@ -272,9 +272,7 @@ export class TemplatesService {
     return this.prisma.template.delete({ where: { id: template.id } });
   }
 
-  private ensureRequiredSections(
-    sections: { type: TemplateSectionType }[],
-  ) {
+  private ensureRequiredSections(sections: { type: TemplateSectionType }[]) {
     if (!sections || sections.length === 0) {
       throw new BadRequestException('Template sections are required');
     }

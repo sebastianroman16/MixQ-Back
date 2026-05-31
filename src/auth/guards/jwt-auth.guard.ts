@@ -5,8 +5,15 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { WorkspaceRole } from '@prisma/client';
+import type { Request } from 'express';
 import { PrismaService } from '../../prisma/prisma.service';
+import { AuthUser } from '../types/auth-user';
+
+type JwtPayload = {
+  sub?: unknown;
+  tokenVersion?: unknown;
+  workspaceId?: unknown;
+};
 
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
@@ -16,7 +23,9 @@ export class JwtAuthGuard implements CanActivate {
   ) {}
 
   async canActivate(context: ExecutionContext): Promise<boolean> {
-    const request = context.switchToHttp().getRequest();
+    const request = context
+      .switchToHttp()
+      .getRequest<Request & { user?: AuthUser }>();
     const authHeader = String(request.headers?.authorization ?? '').trim();
     if (!authHeader) {
       throw new UnauthorizedException('Missing or invalid token');
@@ -30,17 +39,12 @@ export class JwtAuthGuard implements CanActivate {
     }
 
     try {
-      const payload = this.jwtService.verify(token) as {
-        sub?: string;
-        email?: string;
-        tokenVersion?: number;
-        workspaceId?: string;
-        role?: WorkspaceRole;
-      };
+      const payload = this.jwtService.verify<JwtPayload>(token);
 
-      const userId = String(payload.sub ?? '');
+      const userId = typeof payload.sub === 'string' ? payload.sub : '';
       const tokenVersion = Number(payload.tokenVersion);
-      const workspaceId = String(payload.workspaceId ?? '');
+      const workspaceId =
+        typeof payload.workspaceId === 'string' ? payload.workspaceId : '';
 
       if (!userId || !Number.isFinite(tokenVersion) || !workspaceId) {
         throw new UnauthorizedException('Invalid token');
@@ -48,7 +52,12 @@ export class JwtAuthGuard implements CanActivate {
 
       const user = await this.prisma.user.findUnique({
         where: { id: userId },
-        select: { id: true, email: true, tokenVersion: true, workspaceId: true },
+        select: {
+          id: true,
+          email: true,
+          tokenVersion: true,
+          workspaceId: true,
+        },
       });
 
       if (!user || user.tokenVersion !== tokenVersion) {

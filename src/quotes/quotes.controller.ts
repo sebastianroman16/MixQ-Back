@@ -51,6 +51,7 @@ export class QuotesController {
     @Query('maxTotal') maxTotal?: string,
     @Query('folderId') folderId?: string,
     @Query('favoriteIds') favoriteIds?: string,
+    @Query('onlyFavorites') onlyFavorites?: string,
   ) {
     if (
       page ||
@@ -63,9 +64,10 @@ export class QuotesController {
       minTotal ||
       maxTotal ||
       folderId ||
-      favoriteIds
+      favoriteIds ||
+      onlyFavorites
     ) {
-      return this.quotesService.listPage(user.workspaceId, {
+      return this.quotesService.listPage(user.id, user.workspaceId, {
         page,
         pageSize,
         search,
@@ -77,14 +79,20 @@ export class QuotesController {
         maxTotal,
         folderId,
         favoriteIds,
+        onlyFavorites,
       });
     }
-    return this.quotesService.list(user.workspaceId);
+    return this.quotesService.list(user.id, user.workspaceId);
   }
 
   @Get('composer-bootstrap')
   composerBootstrap(@CurrentUser() user: AuthUser) {
-    return this.quotesService.getComposerBootstrap(user.workspaceId);
+    return this.quotesService.getComposerBootstrap(user.id, user.workspaceId);
+  }
+
+  @Get('favorites')
+  listFavorites(@CurrentUser() user: AuthUser) {
+    return this.quotesService.listFavorites(user.id, user.workspaceId);
   }
 
   @Get('folders')
@@ -94,7 +102,10 @@ export class QuotesController {
 
   @Post('folders')
   @RequireWorkspaceRoles(...WORKSPACE_CAPABILITY_ROLES.editQuotes)
-  createFolder(@CurrentUser() user: AuthUser, @Body() dto: CreateQuoteFolderDto) {
+  createFolder(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreateQuoteFolderDto,
+  ) {
     return this.quotesService.createFolder(user.id, user.workspaceId, dto);
   }
 
@@ -113,7 +124,11 @@ export class QuotesController {
     @Param('id', ParseUUIDPipe) id: string,
     @Res({ passthrough: true }) res: Response,
   ) {
-    const pdfBuffer = await this.quotesService.exportPdf(user.id, user.workspaceId, id);
+    const pdfBuffer = await this.quotesService.exportPdf(
+      user.id,
+      user.workspaceId,
+      id,
+    );
     res.set({
       'Content-Type': 'application/pdf',
       'Content-Disposition': `attachment; filename="quote-${id}.pdf"`,
@@ -122,10 +137,7 @@ export class QuotesController {
   }
 
   @Get(':id')
-  get(
-    @CurrentUser() user: AuthUser,
-    @Param('id', ParseUUIDPipe) id: string,
-  ) {
+  get(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
     return this.quotesService.get(user.workspaceId, id);
   }
 
@@ -146,7 +158,28 @@ export class QuotesController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: ChangeQuoteStatusDto,
   ) {
-    return this.quotesService.changeStatus(user.id, user.workspaceId, id, dto.status);
+    return this.quotesService.changeStatus(
+      user.id,
+      user.workspaceId,
+      id,
+      dto.status,
+    );
+  }
+
+  @Post(':id/favorite')
+  setFavorite(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.quotesService.setFavorite(user.id, user.workspaceId, id, true);
+  }
+
+  @Delete(':id/favorite')
+  removeFavorite(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
+    return this.quotesService.setFavorite(user.id, user.workspaceId, id, false);
   }
 
   @Patch(':id/folder')
@@ -156,7 +189,11 @@ export class QuotesController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: AssignQuoteFolderDto,
   ) {
-    return this.quotesService.assignFolder(user.workspaceId, id, dto.folderId ?? null);
+    return this.quotesService.assignFolder(
+      user.workspaceId,
+      id,
+      dto.folderId ?? null,
+    );
   }
 
   @Post(':id/duplicate')

@@ -1,4 +1,5 @@
 import { Prisma } from '@prisma/client';
+import { isAllowedRemoteAssetUrl } from '../../common/security/remote-asset-url';
 import { calculateQuoteTotals } from '../utils/quote-totals';
 
 type QuotePdfItem = {
@@ -84,7 +85,9 @@ const formatDate = (value?: Date | string | null) => {
   return `${day}-${month}-${year}`;
 };
 
-const toNumber = (value: Prisma.Decimal | number | string | null | undefined) =>
+const toNumber = (
+  value: Prisma.Decimal | number | string | null | undefined,
+) =>
   value === null || value === undefined
     ? 0
     : new Prisma.Decimal(value).toNumber();
@@ -166,7 +169,10 @@ const formatIndentedText = (value?: string | null) => {
 const findSection = (sections: QuotePdfSection[] | undefined, type: string) =>
   sections?.find((section) => section.type === type);
 
-const getSectionText = (sections: QuotePdfSection[] | undefined, type: string) => {
+const getSectionText = (
+  sections: QuotePdfSection[] | undefined,
+  type: string,
+) => {
   const section = findSection(sections, type);
   if (!section) {
     return 'Sin informacion.';
@@ -190,6 +196,10 @@ const getSectionValue = (
 };
 
 const valueOrDash = (value?: string | null) => (value ? value : '-');
+const sanitizeAssetUrl = (value?: string | null) =>
+  value && isAllowedRemoteAssetUrl(value) ? value : '';
+const toCssUrl = (value: string) =>
+  value.replace(/\\/g, '\\\\').replace(/'/g, '%27').replace(/\)/g, '%29');
 
 export const renderQuotePdfHtml = (quote: QuotePdfData) => {
   const client = asRecord(quote.clientData);
@@ -212,7 +222,7 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
     quote.description ||
     getSectionValue(quote.sections, 'SUBTITLE', 'Descripcion');
   const termsText = quote.termsText || getSectionText(quote.sections, 'TERMS');
-  const logoUrl = quote.logoUrl;
+  const logoUrl = sanitizeAssetUrl(quote.logoUrl);
   const theme = asUnknownRecord(quote.templateTheme ?? null);
   const themeSheet = asThemeString(theme, 'sheet', '#ffffff');
   const themeText = asThemeString(theme, 'text', '#0f172a');
@@ -221,13 +231,15 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
   const themeHeaderBg = asThemeString(theme, 'headerBg', '#0f172a');
   const themeHeaderText = asThemeString(theme, 'headerText', '#ffffff');
   const themeAccent = asThemeString(theme, 'accent', '#5A6FF0');
-  const backgroundImage = asThemeString(theme, 'backgroundImage', '');
+  const backgroundImage = sanitizeAssetUrl(
+    asThemeString(theme, 'backgroundImage', ''),
+  );
   const backgroundSizeRaw = asThemeNumber(theme, 'backgroundSize', 100);
   const backgroundSize = Math.max(20, Math.min(200, backgroundSizeRaw));
   const overlayRaw = asThemeNumber(theme, 'backgroundOverlay', 0);
   const overlay = Math.max(0, Math.min(100, overlayRaw)) / 100;
   const backgroundImageCss = backgroundImage
-    ? `linear-gradient(rgba(255,255,255,${overlay}), rgba(255,255,255,${overlay})), url('${backgroundImage.replace(/'/g, '%27')}')`
+    ? `linear-gradient(rgba(255,255,255,${overlay}), rgba(255,255,255,${overlay})), url('${toCssUrl(backgroundImage)}')`
     : `linear-gradient(rgba(255,255,255,${overlay}), rgba(255,255,255,${overlay}))`;
   const taxRate =
     quote.taxRate !== null && quote.taxRate !== undefined

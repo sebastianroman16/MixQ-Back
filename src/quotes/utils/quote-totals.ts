@@ -22,7 +22,8 @@ export function calculateQuoteTotals(
   taxRate?: Prisma.Decimal | number | string | null,
 ): QuoteTotals {
   const subtotal = items.reduce(
-    (acc, item) => acc.plus(new Prisma.Decimal(item.unitPrice).mul(item.quantity)),
+    (acc, item) =>
+      acc.plus(new Prisma.Decimal(item.unitPrice).mul(item.quantity)),
     new Prisma.Decimal(0),
   );
 

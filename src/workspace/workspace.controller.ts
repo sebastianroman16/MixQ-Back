@@ -46,7 +46,10 @@ export class WorkspaceController {
   }
 
   @Post('invitations/:token/accept')
-  acceptInvitation(@CurrentUser() user: AuthUser, @Param('token') token: string) {
+  acceptInvitation(
+    @CurrentUser() user: AuthUser,
+    @Param('token') token: string,
+  ) {
     return this.workspaceService.acceptInvitation(user, token);
   }
 

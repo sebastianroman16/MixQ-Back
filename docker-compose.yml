@@ -7,10 +7,10 @@ services:
     restart: unless-stopped
     environment:
       POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: buExLnCCqPGeUgQlnRjvPmVNWQbvtkKF
+      POSTGRES_PASSWORD: postgres
       POSTGRES_DB: railway
     ports:
-      - "41137:41137"
+      - "41137:5432"
     volumes:
       - mixq_pgdata:/var/lib/postgresql/data
 

@@ -13,7 +13,11 @@ export class SenderProfileService {
     });
   }
 
-  async upsertProfile(userId: string, workspaceId: string, dto: UpsertSenderProfileDto) {
+  async upsertProfile(
+    userId: string,
+    workspaceId: string,
+    dto: UpsertSenderProfileDto,
+  ) {
     const existing = await this.prisma.senderProfile.findFirst({
       where: { workspaceId },
       orderBy: { updatedAt: 'desc' },
@@ -57,7 +61,9 @@ export class SenderProfileService {
           },
         });
 
-    const onboardingCompleted = Boolean(profile.displayName && profile.contactEmail);
+    const onboardingCompleted = Boolean(
+      profile.displayName && profile.contactEmail,
+    );
 
     await this.prisma.user.update({
       where: { id: userId },

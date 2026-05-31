@@ -11,6 +11,7 @@ import { DashboardModule } from './dashboard/dashboard.module';
 import { SenderProfileModule } from './sender-profile/sender-profile.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { WorkspaceModule } from './workspace/workspace.module';
+import { FrequentClientsModule } from './frequent-clients/frequent-clients.module';
 
 @Module({
   imports: [
@@ -26,6 +27,7 @@ import { WorkspaceModule } from './workspace/workspace.module';
     SenderProfileModule,
     SubscriptionsModule,
     WorkspaceModule,
+    FrequentClientsModule,
   ],
   controllers: [AppController],
   providers: [AppService],

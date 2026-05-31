@@ -22,4 +22,5 @@ export class QuoteSummaryDto {
   status!: QuoteStatus;
   paymentStatus!: PaymentStatus;
   itemsCount!: number;
+  isFavorite!: boolean;
 }

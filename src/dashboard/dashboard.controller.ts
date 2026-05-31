@@ -22,10 +22,7 @@ export class DashboardController {
   }
 
   @Get('search')
-  search(
-    @CurrentUser() user: AuthUser,
-    @Query('q') query?: string,
-  ) {
+  search(@CurrentUser() user: AuthUser, @Query('q') query?: string) {
     return this.dashboardService.search(user.workspaceId, query ?? '');
   }
 
@@ -40,10 +37,7 @@ export class DashboardController {
   }
 
   @Get('metrics')
-  metrics(
-    @CurrentUser() user: AuthUser,
-    @Query('range') range?: string,
-  ) {
+  metrics(@CurrentUser() user: AuthUser, @Query('range') range?: string) {
     if (range && range !== 'month') {
       throw new BadRequestException('range must be month');
     }

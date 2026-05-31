@@ -69,7 +69,9 @@ export class ServicesService {
     const search = filters.search?.trim();
     const parsedLimit = Number.parseInt(filters.limit ?? '', 10);
     const limit =
-      Number.isFinite(parsedLimit) && parsedLimit > 0 ? Math.min(parsedLimit, 250) : undefined;
+      Number.isFinite(parsedLimit) && parsedLimit > 0
+        ? Math.min(parsedLimit, 250)
+        : undefined;
 
     return this.prisma.service.findMany({
       where: {
@@ -159,7 +161,12 @@ export class ServicesService {
     return service;
   }
 
-  async update(userId: string, workspaceId: string, id: string, dto: UpdateServiceDto) {
+  async update(
+    userId: string,
+    workspaceId: string,
+    id: string,
+    dto: UpdateServiceDto,
+  ) {
     const service = await this.ensureServiceAccess(workspaceId, id);
     let inventoryCode: string | undefined;
 
@@ -207,7 +214,11 @@ export class ServicesService {
     return this.prisma.service.delete({ where: { id: service.id } });
   }
 
-  async createCategory(userId: string, workspaceId: string, dto: CreateCategoryDto) {
+  async createCategory(
+    userId: string,
+    workspaceId: string,
+    dto: CreateCategoryDto,
+  ) {
     return this.prisma.category.create({
       data: {
         userId,
@@ -228,7 +239,11 @@ export class ServicesService {
     return this.ensureCategoryAccess(workspaceId, id);
   }
 
-  async updateCategory(workspaceId: string, id: string, dto: UpdateCategoryDto) {
+  async updateCategory(
+    workspaceId: string,
+    id: string,
+    dto: UpdateCategoryDto,
+  ) {
     try {
       return await this.prisma.$transaction(async (tx) => {
         const existing = await tx.category.findFirst({
@@ -347,9 +362,7 @@ export class ServicesService {
       select: { inventoryCode: true },
     });
 
-    const match = latest?.inventoryCode?.match(
-      new RegExp(`^${prefix}(\\d+)$`),
-    );
+    const match = latest?.inventoryCode?.match(new RegExp(`^${prefix}(\\d+)$`));
     const next = match ? Number(match[1]) + 1 : 1;
     return `${prefix}${String(next).padStart(3, '0')}`;
   }

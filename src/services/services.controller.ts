@@ -40,7 +40,11 @@ export class ServicesController {
     @Query('search') search?: string,
     @Query('limit') limit?: string,
   ) {
-    return this.servicesService.findAll(user.workspaceId, { categoryId, search, limit });
+    return this.servicesService.findAll(user.workspaceId, {
+      categoryId,
+      search,
+      limit,
+    });
   }
 
   @Get('counts')
@@ -50,7 +54,10 @@ export class ServicesController {
 
   @Post('categories')
   @RequireWorkspaceRoles(...WORKSPACE_CAPABILITY_ROLES.editServices)
-  createCategory(@CurrentUser() user: AuthUser, @Body() dto: CreateCategoryDto) {
+  createCategory(
+    @CurrentUser() user: AuthUser,
+    @Body() dto: CreateCategoryDto,
+  ) {
     return this.servicesService.createCategory(user.id, user.workspaceId, dto);
   }
 

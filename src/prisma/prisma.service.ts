@@ -1,4 +1,9 @@
-import { Injectable, Logger, OnModuleDestroy, OnModuleInit } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  OnModuleInit,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
@@ -18,7 +23,9 @@ export class PrismaService
     const pool = new Pool({
       connectionString,
       max: Number(configService.get('PG_POOL_MAX') ?? 10),
-      idleTimeoutMillis: Number(configService.get('PG_IDLE_TIMEOUT_MS') ?? 30_000),
+      idleTimeoutMillis: Number(
+        configService.get('PG_IDLE_TIMEOUT_MS') ?? 30_000,
+      ),
       connectionTimeoutMillis: Number(
         configService.get('PG_CONNECTION_TIMEOUT_MS') ?? 10_000,
       ),
@@ -43,12 +50,16 @@ export class PrismaService
   }
 
   async onModuleInit() {
-    const maxAttempts = Number(this.configService.get('PRISMA_CONNECT_RETRIES') ?? 3);
+    const maxAttempts = Number(
+      this.configService.get('PRISMA_CONNECT_RETRIES') ?? 3,
+    );
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         await this.$connect();
         if (attempt > 1) {
-          this.logger.log(`Prisma connected after retry ${attempt}/${maxAttempts}`);
+          this.logger.log(
+            `Prisma connected after retry ${attempt}/${maxAttempts}`,
+          );
         }
         return;
       } catch (error) {

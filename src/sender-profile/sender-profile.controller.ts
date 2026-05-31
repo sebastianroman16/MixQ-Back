@@ -24,6 +24,10 @@ export class SenderProfileController {
     @CurrentUser() user: AuthUser,
     @Body() dto: UpsertSenderProfileDto,
   ) {
-    return this.senderProfileService.upsertProfile(user.id, user.workspaceId, dto);
+    return this.senderProfileService.upsertProfile(
+      user.id,
+      user.workspaceId,
+      dto,
+    );
   }
 }

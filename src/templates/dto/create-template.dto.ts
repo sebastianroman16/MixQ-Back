@@ -1,5 +1,6 @@
 import {
   ArrayMinSize,
+  ArrayMaxSize,
   IsArray,
   IsBoolean,
   IsObject,
@@ -30,6 +31,7 @@ export class CreateTemplateDto {
 
   @IsArray()
   @ArrayMinSize(1)
+  @ArrayMaxSize(20)
   @ValidateNested({ each: true })
   @Type(() => CreateTemplateSectionDto)
   sections: CreateTemplateSectionDto[];

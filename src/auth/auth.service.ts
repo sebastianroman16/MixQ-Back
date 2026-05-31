@@ -177,12 +177,11 @@ export class AuthService {
       throw new NotFoundException('Invitation not found');
     }
 
-    const status =
-      invitation.acceptedAt
-        ? 'ACCEPTED'
-        : invitation.expiresAt <= new Date()
-          ? 'EXPIRED'
-          : 'PENDING';
+    const status = invitation.acceptedAt
+      ? 'ACCEPTED'
+      : invitation.expiresAt <= new Date()
+        ? 'EXPIRED'
+        : 'PENDING';
 
     return {
       token: invitation.token,
@@ -309,6 +308,7 @@ export class AuthService {
         email: true,
         name: true,
         onboardingCompleted: true,
+        dashboardOnboardingSeenAt: true,
         plan: true,
         subscriptionStatus: true,
         currentPeriodEnd: true,
@@ -333,11 +333,24 @@ export class AuthService {
         role: session.role,
       },
       onboardingCompleted: user.onboardingCompleted,
+      dashboardOnboardingSeenAt: user.dashboardOnboardingSeenAt,
       plan: user.plan,
       subscriptionStatus: user.subscriptionStatus,
       currentPeriodEnd: user.currentPeriodEnd,
       createdAt: user.createdAt,
       updatedAt: user.updatedAt,
+    };
+  }
+
+  async markDashboardOnboardingSeen(userId: string) {
+    const user = await this.prisma.user.update({
+      where: { id: userId },
+      data: { dashboardOnboardingSeenAt: new Date() },
+      select: { dashboardOnboardingSeenAt: true },
+    });
+
+    return {
+      dashboardOnboardingSeenAt: user.dashboardOnboardingSeenAt,
     };
   }
 
@@ -452,7 +465,10 @@ export class AuthService {
     };
   }
 
-  private getDefaultWorkspaceName(user: { name: string | null; email: string }) {
+  private getDefaultWorkspaceName(user: {
+    name: string | null;
+    email: string;
+  }) {
     const trimmedName = user.name?.trim();
     if (trimmedName) {
       return `${trimmedName} Workspace`;
