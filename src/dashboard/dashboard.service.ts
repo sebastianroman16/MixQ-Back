@@ -245,49 +245,37 @@ export class DashboardService {
     const profilingEnabled = process.env.PROFILE_DASHBOARD_ANALYTICS === '1';
     const startedAt = Date.now();
 
-    const quotesStartedAt = Date.now();
-    const quotesPromise = this.prisma.quote
-      .findMany({
-        where: { workspaceId },
-        orderBy: { issuedAt: 'asc' },
-        select: {
-          templateId: true,
-          status: true,
-          total: true,
-          issuedAt: true,
-          sentAt: true,
-          acceptedAt: true,
-          rejectedAt: true,
-          validUntil: true,
-          _count: {
-            select: {
-              items: true,
-            },
-          },
-        },
-      })
-      .then((items) => ({
-        items,
-        elapsedMs: Date.now() - quotesStartedAt,
-      }));
+    const now = new Date();
+    const trendStart = new Date(now);
+    trendStart.setHours(0, 0, 0, 0);
+    trendStart.setDate(trendStart.getDate() - 13);
+    const monthStart = new Date(now.getFullYear(), now.getMonth() - 5, 1);
 
-    const templateCountsStartedAt = Date.now();
-    const templateCountsPromise = this.prisma.quote
-      .groupBy({
+    const [
+      statusAggregates,
+      templateCounts,
+      topServiceRows,
+      metrics,
+      createdByDay,
+      sentByDay,
+      acceptedByDay,
+      monthSums,
+      scatterRows,
+    ] = await Promise.all([
+      this.prisma.quote.groupBy({
+        by: ['status'],
+        where: { workspaceId },
+        _count: { _all: true },
+        _sum: { total: true },
+      }),
+      this.prisma.quote.groupBy({
         by: ['templateId'],
         where: { workspaceId },
         _count: {
           templateId: true,
         },
-      })
-      .then((items) => ({
-        items,
-        elapsedMs: Date.now() - templateCountsStartedAt,
-      }));
-
-    const topServiceRowsStartedAt = Date.now();
-    const topServiceRowsPromise = this.prisma.quoteItem
-      .groupBy({
+      }),
+      this.prisma.quoteItem.groupBy({
         by: ['title'],
         where: {
           quote: {
@@ -297,22 +285,28 @@ export class DashboardService {
         _count: {
           title: true,
         },
-      })
-      .then((items) => ({
-        items,
-        elapsedMs: Date.now() - topServiceRowsStartedAt,
-      }));
-
-    const [quotesResult, templateCountsResult, topServiceRowsResult, metrics] =
-      await Promise.all([
-        quotesPromise,
-        templateCountsPromise,
-        topServiceRowsPromise,
-        this.getMetrics(workspaceId, 'month'),
-      ]);
-    const quotes = quotesResult.items;
-    const templateCounts = templateCountsResult.items;
-    const topServiceRows = topServiceRowsResult.items;
+      }),
+      this.getMetrics(workspaceId, 'month'),
+      this.countQuotesByDay(workspaceId, 'issuedAt', trendStart),
+      this.countQuotesByDay(workspaceId, 'sentAt', trendStart),
+      this.countQuotesByDay(workspaceId, 'acceptedAt', trendStart),
+      this.sumQuoteTotalsByMonth(workspaceId, monthStart),
+      this.prisma.quote.findMany({
+        where: { workspaceId },
+        orderBy: { issuedAt: 'desc' },
+        take: 36,
+        select: {
+          issuedAt: true,
+          status: true,
+          total: true,
+          _count: {
+            select: {
+              items: true,
+            },
+          },
+        },
+      }),
+    ]);
 
     const byStatus = Object.values(QuoteStatus).reduce(
       (acc, status) => {
@@ -322,27 +316,31 @@ export class DashboardService {
       {} as Record<QuoteStatus, number>,
     );
 
+    let totalQuotes = 0;
     let acceptedRevenue = 0;
     let measuredQuotes = 0;
     let acceptedQuotes = 0;
     let sentQuotes = 0;
 
-    for (const quote of quotes) {
-      const total = new Prisma.Decimal(quote.total).toNumber();
-      byStatus[quote.status] = (byStatus[quote.status] ?? 0) + 1;
+    for (const entry of statusAggregates) {
+      const count = entry._count._all;
+      byStatus[entry.status] = count;
+      totalQuotes += count;
 
-      if (quote.status !== QuoteStatus.DRAFT) {
-        measuredQuotes += 1;
+      if (entry.status !== QuoteStatus.DRAFT) {
+        measuredQuotes += count;
       }
-      if (quote.status === QuoteStatus.ACCEPTED) {
-        acceptedQuotes += 1;
-        acceptedRevenue += total;
+      if (entry.status === QuoteStatus.ACCEPTED) {
+        acceptedQuotes += count;
+        acceptedRevenue = entry._sum.total
+          ? new Prisma.Decimal(entry._sum.total).toNumber()
+          : 0;
       }
       if (
-        quote.status === QuoteStatus.SENT ||
-        quote.status === QuoteStatus.VIEWED
+        entry.status === QuoteStatus.SENT ||
+        entry.status === QuoteStatus.VIEWED
       ) {
-        sentQuotes += 1;
+        sentQuotes += count;
       }
     }
 
@@ -350,14 +348,12 @@ export class DashboardService {
       .map((entry) => entry.templateId)
       .filter((id): id is string => !!id);
 
-    const templateLookupStartedAt = Date.now();
     const templates = templateIds.length
       ? await this.prisma.template.findMany({
           where: { id: { in: templateIds } },
           select: { id: true, name: true },
         })
       : [];
-    const templateLookupMs = Date.now() - templateLookupStartedAt;
 
     const templateNameById = new Map(
       templates.map((template) => [template.id, template.name]),
@@ -381,7 +377,35 @@ export class DashboardService {
       .sort((a, b) => b.value - a.value)
       .slice(0, 6);
 
-    const scatter = quotes.slice(-36).map((quote) => ({
+    const trendSeries: AnalyticsTrendPoint[] = [];
+    for (let index = 13; index >= 0; index -= 1) {
+      const day = new Date(now);
+      day.setHours(0, 0, 0, 0);
+      day.setDate(day.getDate() - index);
+      const key = this.dayKey(day);
+      trendSeries.push({
+        label: `${day.getDate()}/${day.getMonth() + 1}`,
+        created: createdByDay.get(key) ?? 0,
+        sent: sentByDay.get(key) ?? 0,
+        accepted: acceptedByDay.get(key) ?? 0,
+      });
+    }
+
+    const monthSeries: AnalyticsMonthPoint[] = [];
+    for (let offset = 5; offset >= 0; offset -= 1) {
+      const monthDate = new Date(now.getFullYear(), now.getMonth() - offset, 1);
+      const key = `${monthDate.getFullYear()}-${String(
+        monthDate.getMonth() + 1,
+      ).padStart(2, '0')}`;
+      const sums = monthSums.get(key);
+      monthSeries.push({
+        label: monthDate.toLocaleDateString('es-CL', { month: 'short' }),
+        quoted: sums?.quoted ?? 0,
+        accepted: sums?.accepted ?? 0,
+      });
+    }
+
+    const scatter = [...scatterRows].reverse().map((quote) => ({
       issuedAt: quote.issuedAt.toISOString(),
       total: new Prisma.Decimal(quote.total).toNumber(),
       status: quote.status,
@@ -390,7 +414,7 @@ export class DashboardService {
 
     const payload = {
       totals: {
-        totalQuotes: quotes.length,
+        totalQuotes,
         measuredQuotes,
         acceptedQuotes,
         sentQuotes,
@@ -404,8 +428,8 @@ export class DashboardService {
       byStatus,
       topTemplates,
       topServices,
-      trendSeries: this.buildLast14DaysAnalyticsSeries(quotes),
-      monthSeries: this.buildLast6MonthsAnalyticsSeries(quotes),
+      trendSeries,
+      monthSeries,
       scatter,
     };
 
@@ -414,14 +438,10 @@ export class DashboardService {
         JSON.stringify({
           event: 'dashboard_analytics_profile',
           workspaceId,
-          quoteCount: quotes.length,
+          quoteCount: totalQuotes,
           templateCountRows: templateCounts.length,
           topServiceRowsCount: topServiceRows.length,
           timingsMs: {
-            quotesFindMany: quotesResult.elapsedMs,
-            templateCountsGroupBy: templateCountsResult.elapsedMs,
-            quoteItemTitleGroupBy: topServiceRowsResult.elapsedMs,
-            templateLookup: templateLookupMs,
             total: Date.now() - startedAt,
           },
         }),
@@ -438,82 +458,51 @@ export class DashboardService {
     return value as { name?: string };
   }
 
-  private buildLast14DaysAnalyticsSeries(
-    quotes: Array<{
-      issuedAt: Date;
-      sentAt: Date | null;
-      acceptedAt: Date | null;
-    }>,
-  ): AnalyticsTrendPoint[] {
-    const days: AnalyticsTrendPoint[] = [];
-    const now = new Date();
+  private async countQuotesByDay(
+    workspaceId: string,
+    column: 'issuedAt' | 'sentAt' | 'acceptedAt',
+    from: Date,
+  ): Promise<Map<string, number>> {
+    const columnRef = Prisma.raw(`"${column}"`);
+    const rows = await this.prisma.$queryRaw<
+      Array<{ day: string; count: number }>
+    >(Prisma.sql`
+      SELECT to_char(date_trunc('day', ${columnRef}), 'YYYY-MM-DD') AS day,
+             COUNT(*)::int AS count
+      FROM "Quote"
+      WHERE "workspaceId" = ${workspaceId}
+        AND ${columnRef} >= ${from}
+      GROUP BY 1
+    `);
 
-    for (let index = 13; index >= 0; index -= 1) {
-      const day = new Date(now);
-      day.setHours(0, 0, 0, 0);
-      day.setDate(day.getDate() - index);
-      const key = this.dayKey(day);
-      days.push({
-        label: `${day.getDate()}/${day.getMonth() + 1}`,
-        created: this.countByDay(quotes, key, 'issuedAt'),
-        sent: this.countByDay(quotes, key, 'sentAt'),
-        accepted: this.countByDay(quotes, key, 'acceptedAt'),
-      });
-    }
-
-    return days;
+    return new Map(rows.map((row) => [row.day, Number(row.count)]));
   }
 
-  private buildLast6MonthsAnalyticsSeries(
-    quotes: Array<{
-      issuedAt: Date;
-      status: QuoteStatus;
-      total: Prisma.Decimal;
-    }>,
-  ): AnalyticsMonthPoint[] {
-    const months: AnalyticsMonthPoint[] = [];
-    const now = new Date();
+  private async sumQuoteTotalsByMonth(
+    workspaceId: string,
+    from: Date,
+  ): Promise<Map<string, { quoted: number; accepted: number }>> {
+    const rows = await this.prisma.$queryRaw<
+      Array<{ month: string; quoted: unknown; accepted: unknown }>
+    >(Prisma.sql`
+      SELECT to_char(date_trunc('month', "issuedAt"), 'YYYY-MM') AS month,
+             COALESCE(SUM("total"), 0) AS quoted,
+             COALESCE(SUM("total") FILTER (WHERE "status" = 'ACCEPTED'), 0) AS accepted
+      FROM "Quote"
+      WHERE "workspaceId" = ${workspaceId}
+        AND "issuedAt" >= ${from}
+      GROUP BY 1
+    `);
 
-    for (let offset = 5; offset >= 0; offset -= 1) {
-      const monthDate = new Date(now.getFullYear(), now.getMonth() - offset, 1);
-      const year = monthDate.getFullYear();
-      const month = monthDate.getMonth();
-
-      const monthQuotes = quotes.filter((quote) => {
-        const issuedAt = new Date(quote.issuedAt);
-        return issuedAt.getFullYear() === year && issuedAt.getMonth() === month;
-      });
-
-      months.push({
-        label: monthDate.toLocaleDateString('es-CL', { month: 'short' }),
-        quoted: monthQuotes.reduce(
-          (acc, quote) => acc + new Prisma.Decimal(quote.total).toNumber(),
-          0,
-        ),
-        accepted: monthQuotes
-          .filter((quote) => quote.status === QuoteStatus.ACCEPTED)
-          .reduce(
-            (acc, quote) => acc + new Prisma.Decimal(quote.total).toNumber(),
-            0,
-          ),
-      });
-    }
-
-    return months;
-  }
-
-  private countByDay(
-    quotes: Array<Record<string, Date | null>>,
-    key: string,
-    field: string,
-  ): number {
-    return quotes.reduce((acc, quote) => {
-      const raw = quote[field];
-      if (!raw) {
-        return acc;
-      }
-      return this.dayKey(raw) === key ? acc + 1 : acc;
-    }, 0);
+    return new Map(
+      rows.map((row) => [
+        row.month,
+        {
+          quoted: Number(row.quoted),
+          accepted: Number(row.accepted),
+        },
+      ]),
+    );
   }
 
   private dayKey(value: Date): string {

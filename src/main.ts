@@ -1,6 +1,7 @@
 import { ValidationPipe } from '@nestjs/common';
 import { NestFactory } from '@nestjs/core';
 import { NestExpressApplication } from '@nestjs/platform-express';
+import compression from 'compression';
 import { json, urlencoded } from 'express';
 import type { NextFunction, Request, Response } from 'express';
 import { join } from 'path';
@@ -14,6 +15,7 @@ async function bootstrap() {
   if (process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true') {
     app.set('trust proxy', 1);
   }
+  app.use(compression());
   const bodyLimit = process.env.REQUEST_BODY_LIMIT ?? '1mb';
   app.use(json({ limit: bodyLimit }));
   app.use(urlencoded({ extended: true, limit: bodyLimit }));

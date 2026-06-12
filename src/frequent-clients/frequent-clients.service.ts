@@ -1,4 +1,8 @@
-import { ConflictException, Injectable, NotFoundException } from '@nestjs/common';
+import {
+  ConflictException,
+  Injectable,
+  NotFoundException,
+} from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { CreateFrequentClientDto } from './dto/create-frequent-client.dto';
@@ -15,7 +19,11 @@ export class FrequentClientsService {
     });
   }
 
-  async create(userId: string, workspaceId: string, dto: CreateFrequentClientDto) {
+  async create(
+    userId: string,
+    workspaceId: string,
+    dto: CreateFrequentClientDto,
+  ) {
     try {
       return await this.prisma.frequentClient.create({
         data: {
@@ -31,7 +39,9 @@ export class FrequentClientsService {
       });
     } catch (error) {
       if (this.isWorkspaceLabelConflict(error)) {
-        throw new ConflictException('Ya existe un cliente frecuente con ese nombre interno.');
+        throw new ConflictException(
+          'Ya existe un cliente frecuente con ese nombre interno.',
+        );
       }
       throw error;
     }
@@ -47,7 +57,9 @@ export class FrequentClientsService {
       });
     } catch (error) {
       if (this.isWorkspaceLabelConflict(error)) {
-        throw new ConflictException('Ya existe un cliente frecuente con ese nombre interno.');
+        throw new ConflictException(
+          'Ya existe un cliente frecuente con ese nombre interno.',
+        );
       }
       throw error;
     }

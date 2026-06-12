@@ -12,8 +12,6 @@ import {
   QuoteStatus,
   TemplateType,
 } from '@prisma/client';
-import puppeteer from 'puppeteer';
-import { isAllowedRemoteAssetUrl } from '../common/security/remote-asset-url';
 import { PrismaService } from '../prisma/prisma.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateQuoteDto } from './dto/create-quote.dto';
@@ -21,6 +19,7 @@ import { CreateQuoteFolderDto } from './dto/create-quote-folder.dto';
 import { CreateQuoteItemDto } from './dto/create-quote-item.dto';
 import { QuoteSummaryDto } from './dto/quote-summary.dto';
 import { UpdateQuoteDto } from './dto/update-quote.dto';
+import { PdfRendererService } from './pdf/pdf-renderer.service';
 import { renderQuotePdfHtml } from './pdf/quote-pdf.template';
 import {
   calculateQuoteTotals,
@@ -105,6 +104,7 @@ export class QuotesService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly subscriptionsService: SubscriptionsService,
+    private readonly pdfRenderer: PdfRendererService,
   ) {}
 
   private get quoteFolderDelegate(): QuoteFolderDelegate {
@@ -1002,42 +1002,7 @@ export class QuotesService {
       templateTheme: quote.template?.theme ?? null,
     });
 
-    const browser = await puppeteer.launch({
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
-    });
-
-    try {
-      const page = await browser.newPage();
-      page.setDefaultTimeout(30_000);
-      page.setDefaultNavigationTimeout(30_000);
-      await page.setRequestInterception(true);
-      page.on('request', (request) => {
-        const requestUrl = request.url();
-        if (
-          requestUrl === 'about:blank' ||
-          requestUrl.startsWith('data:') ||
-          requestUrl.startsWith('blob:') ||
-          isAllowedRemoteAssetUrl(requestUrl)
-        ) {
-          void request.continue();
-          return;
-        }
-
-        void request.abort();
-      });
-      await page.setContent(html, { waitUntil: 'networkidle0' });
-      const pdfBuffer = await page.pdf({
-        format: 'A4',
-        printBackground: true,
-        preferCSSPageSize: true,
-        scale: 0.92,
-        margin: { top: '10px', right: '10px', bottom: '10px', left: '10px' },
-      });
-      await page.close();
-      return pdfBuffer;
-    } finally {
-      await browser.close();
-    }
+    return this.pdfRenderer.renderPdf(html);
   }
 
   private calculateTotals(

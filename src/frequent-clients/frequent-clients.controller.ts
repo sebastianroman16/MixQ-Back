@@ -22,7 +22,9 @@ import { FrequentClientsService } from './frequent-clients.service';
 @Controller('frequent-clients')
 @UseGuards(JwtAuthGuard, WorkspaceRoleGuard)
 export class FrequentClientsController {
-  constructor(private readonly frequentClientsService: FrequentClientsService) {}
+  constructor(
+    private readonly frequentClientsService: FrequentClientsService,
+  ) {}
 
   @Get()
   list(@CurrentUser() user: AuthUser) {
@@ -47,7 +49,10 @@ export class FrequentClientsController {
 
   @Delete(':id')
   @RequireWorkspaceRoles(...WORKSPACE_CAPABILITY_ROLES.editQuotes)
-  remove(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
+  remove(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+  ) {
     return this.frequentClientsService.remove(user.workspaceId, id);
   }
 }
