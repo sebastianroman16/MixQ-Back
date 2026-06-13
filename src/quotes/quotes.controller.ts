@@ -12,6 +12,7 @@ import {
   StreamableFile,
   UseGuards,
 } from '@nestjs/common';
+import { WorkspaceRole } from '@prisma/client';
 import type { Response } from 'express';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
 import { RequireWorkspaceRoles } from '../auth/decorators/require-workspace-roles.decorator';
@@ -23,6 +24,7 @@ import { CreateQuoteDto } from './dto/create-quote.dto';
 import { CreateQuoteFolderDto } from './dto/create-quote-folder.dto';
 import { ChangeQuoteStatusDto } from './dto/change-quote-status.dto';
 import { AssignQuoteFolderDto } from './dto/assign-quote-folder.dto';
+import { AssignQuoteSellerDto } from './dto/assign-quote-seller.dto';
 import { UpdateQuoteDto } from './dto/update-quote.dto';
 import { QuotesService } from './quotes.service';
 
@@ -52,6 +54,7 @@ export class QuotesController {
     @Query('folderId') folderId?: string,
     @Query('favoriteIds') favoriteIds?: string,
     @Query('onlyFavorites') onlyFavorites?: string,
+    @Query('sellerId') sellerId?: string,
   ) {
     if (
       page ||
@@ -65,9 +68,10 @@ export class QuotesController {
       maxTotal ||
       folderId ||
       favoriteIds ||
-      onlyFavorites
+      onlyFavorites ||
+      sellerId
     ) {
-      return this.quotesService.listPage(user.id, user.workspaceId, {
+      return this.quotesService.listPage(user.id, user.role, user.workspaceId, {
         page,
         pageSize,
         search,
@@ -80,14 +84,15 @@ export class QuotesController {
         folderId,
         favoriteIds,
         onlyFavorites,
+        sellerId,
       });
     }
-    return this.quotesService.list(user.id, user.workspaceId);
+    return this.quotesService.list(user.id, user.role, user.workspaceId);
   }
 
   @Get('composer-bootstrap')
   composerBootstrap(@CurrentUser() user: AuthUser) {
-    return this.quotesService.getComposerBootstrap(user.id, user.workspaceId);
+    return this.quotesService.getComposerBootstrap(user.id, user.role, user.workspaceId);
   }
 
   @Get('favorites')
@@ -126,6 +131,7 @@ export class QuotesController {
   ) {
     const pdfBuffer = await this.quotesService.exportPdf(
       user.id,
+      user.role,
       user.workspaceId,
       id,
     );
@@ -138,7 +144,7 @@ export class QuotesController {
 
   @Get(':id')
   get(@CurrentUser() user: AuthUser, @Param('id', ParseUUIDPipe) id: string) {
-    return this.quotesService.get(user.workspaceId, id);
+    return this.quotesService.get(user.id, user.role, user.workspaceId, id);
   }
 
   @Patch(':id')
@@ -148,7 +154,7 @@ export class QuotesController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateQuoteDto,
   ) {
-    return this.quotesService.update(user.id, user.workspaceId, id, dto);
+    return this.quotesService.update(user.id, user.role, user.workspaceId, id, dto);
   }
 
   @Post(':id/status')
@@ -160,6 +166,7 @@ export class QuotesController {
   ) {
     return this.quotesService.changeStatus(
       user.id,
+      user.role,
       user.workspaceId,
       id,
       dto.status,
@@ -171,7 +178,7 @@ export class QuotesController {
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.quotesService.setFavorite(user.id, user.workspaceId, id, true);
+    return this.quotesService.setFavorite(user.id, user.role, user.workspaceId, id, true);
   }
 
   @Delete(':id/favorite')
@@ -179,7 +186,7 @@ export class QuotesController {
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.quotesService.setFavorite(user.id, user.workspaceId, id, false);
+    return this.quotesService.setFavorite(user.id, user.role, user.workspaceId, id, false);
   }
 
   @Patch(':id/folder')
@@ -190,10 +197,22 @@ export class QuotesController {
     @Body() dto: AssignQuoteFolderDto,
   ) {
     return this.quotesService.assignFolder(
+      user.id,
+      user.role,
       user.workspaceId,
       id,
       dto.folderId ?? null,
     );
+  }
+
+  @Patch(':id/seller')
+  @RequireWorkspaceRoles(WorkspaceRole.OWNER)
+  assignSeller(
+    @CurrentUser() user: AuthUser,
+    @Param('id', ParseUUIDPipe) id: string,
+    @Body() dto: AssignQuoteSellerDto,
+  ) {
+    return this.quotesService.assignSeller(user.workspaceId, id, dto.sellerId);
   }
 
   @Post(':id/duplicate')
@@ -202,7 +221,7 @@ export class QuotesController {
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.quotesService.duplicate(user.id, user.workspaceId, id);
+    return this.quotesService.duplicate(user.id, user.role, user.workspaceId, id);
   }
 
   @Delete(':id')
@@ -211,6 +230,6 @@ export class QuotesController {
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.quotesService.remove(user.workspaceId, id);
+    return this.quotesService.remove(user.id, user.role, user.workspaceId, id);
   }
 }

@@ -5,16 +5,25 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, QuoteStatus, WorkspaceRole } from '@prisma/client';
+import { PaymentStatus, Prisma, QuoteStatus, WorkspaceRole } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'crypto';
 import { AuthUser } from '../auth/types/auth-user';
+import { InvitationMailService } from '../mail/invitation-mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateWorkspaceInvitationDto } from './dto/create-workspace-invitation.dto';
+import { UpdateSellerGoalDto } from './dto/update-seller-goal.dto';
 import { UpdateWorkspaceMemberRoleDto } from './dto/update-workspace-member-role.dto';
 
 type MetricsRange = 'month' | 'quarter' | 'year';
+
+const WORKSPACE_ROLE_LABELS: Record<WorkspaceRole, string> = {
+  [WorkspaceRole.OWNER]: 'Dueno',
+  [WorkspaceRole.ADMIN]: 'Administrador',
+  [WorkspaceRole.EDITOR]: 'Editor',
+  [WorkspaceRole.VIEWER]: 'Solo lectura',
+};
 
 @Injectable()
 export class WorkspaceService {
@@ -23,6 +32,7 @@ export class WorkspaceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly subscriptionsService: SubscriptionsService,
+    private readonly invitationMailService: InvitationMailService,
   ) {}
 
   async getMe(user: AuthUser) {
@@ -251,7 +261,7 @@ export class WorkspaceService {
           mode: 'insensitive',
         },
       },
-      select: { id: true, mustChangePassword: true },
+      select: { id: true, mustChangePassword: true, name: true },
     });
 
     if (!invitedUser || !invitedUser.mustChangePassword) {
@@ -286,10 +296,29 @@ export class WorkspaceService {
       });
     });
 
+    const workspace = await this.prisma.workspace.findUnique({
+      where: { id: user.workspaceId },
+      select: { name: true },
+    });
+
+    // Reenvio: ademas de regenerar el acceso, intentamos enviar el correo.
+    // Si Resend no esta configurado, el metodo devuelve SKIPPED y el owner
+    // sigue pudiendo compartir el enlace/clave manualmente (se devuelven igual).
+    const email = await this.invitationMailService.sendWorkspaceInvitationEmail({
+      to: invitation.email,
+      invitedUserName: invitedUser.name ?? invitation.email,
+      workspaceName: workspace?.name ?? 'tu equipo',
+      invitedByName: null,
+      roleLabel: WORKSPACE_ROLE_LABELS[invitation.role],
+      token: updated.token,
+      temporaryPassword,
+    });
+
     return {
       ...updated,
       invitationUrl: this.buildInvitationUrl(updated.token),
       temporaryPassword,
+      emailDelivery: email,
     };
   }
 
@@ -320,6 +349,107 @@ export class WorkspaceService {
     });
 
     return { success: true };
+  }
+
+  /**
+   * Registro de actividad del equipo (solo BUSINESS). Se deriva de los
+   * timestamps que ya guarda cada cotizacion (creada / enviada / vista /
+   * aceptada / rechazada / anulada) junto con el vendedor responsable.
+   * No hay tabla de auditoria: para un historial con cada edicion habria que
+   * agregar una tabla de eventos dedicada.
+   */
+  async getActivity(user: AuthUser, limit = 50) {
+    this.assertManagerRole(user.role);
+    await this.subscriptionsService.assertCanUseAdvancedMetrics(
+      user.workspaceId,
+    );
+
+    const quotes = await this.prisma.quote.findMany({
+      where: {
+        workspaceId: user.workspaceId,
+        userId: { not: user.id },
+      },
+      orderBy: { updatedAt: 'desc' },
+      take: 200,
+      select: {
+        id: true,
+        quoteNumber: true,
+        title: true,
+        total: true,
+        clientData: true,
+        createdAt: true,
+        sentAt: true,
+        viewedAt: true,
+        acceptedAt: true,
+        rejectedAt: true,
+        cancelledAt: true,
+        user: { select: { id: true, name: true } },
+      },
+    });
+
+    type ActivityType =
+      | 'created'
+      | 'sent'
+      | 'viewed'
+      | 'accepted'
+      | 'rejected'
+      | 'cancelled';
+
+    const events: Array<{
+      type: ActivityType;
+      at: Date;
+      quoteId: string;
+      quoteNumber: string;
+      quoteTitle: string;
+      total: number;
+      sellerId: string | null;
+      sellerName: string | null;
+      clientName: string | null;
+    }> = [];
+
+    for (const quote of quotes) {
+      const base = {
+        quoteId: quote.id,
+        quoteNumber: quote.quoteNumber,
+        quoteTitle: quote.title,
+        total: new Prisma.Decimal(quote.total).toNumber(),
+        sellerId: quote.user?.id ?? null,
+        sellerName: quote.user?.name ?? null,
+        clientName: this.extractClientName(quote.clientData),
+      };
+
+      const stamps: Array<[ActivityType, Date | null]> = [
+        ['created', quote.createdAt],
+        ['sent', quote.sentAt],
+        ['viewed', quote.viewedAt],
+        ['accepted', quote.acceptedAt],
+        ['rejected', quote.rejectedAt],
+        ['cancelled', quote.cancelledAt],
+      ];
+
+      for (const [type, at] of stamps) {
+        if (at) {
+          events.push({ type, at, ...base });
+        }
+      }
+    }
+
+    events.sort((a, b) => b.at.getTime() - a.at.getTime());
+
+    return {
+      items: events.slice(0, limit).map((event) => ({
+        ...event,
+        at: event.at.toISOString(),
+      })),
+    };
+  }
+
+  private extractClientName(data: Prisma.JsonValue): string | null {
+    if (data && typeof data === 'object' && !Array.isArray(data)) {
+      const name = (data as Record<string, unknown>)['name'];
+      return typeof name === 'string' ? name : null;
+    }
+    return null;
   }
 
   private generateTemporaryPassword() {
@@ -419,29 +549,38 @@ export class WorkspaceService {
       throw new NotFoundException('Member not found');
     }
 
-    if (
-      member.role === WorkspaceRole.OWNER &&
-      dto.role !== WorkspaceRole.OWNER
-    ) {
+    const nextRole = dto.role ?? member.role;
+    const nextName = dto.name?.trim();
+
+    if (member.role === WorkspaceRole.OWNER && nextRole !== WorkspaceRole.OWNER) {
       await this.assertMoreThanOneOwner(user.workspaceId, member.id);
     }
 
-    if (dto.role === WorkspaceRole.OWNER && user.role !== WorkspaceRole.OWNER) {
+    if (nextRole === WorkspaceRole.OWNER && user.role !== WorkspaceRole.OWNER) {
       throw new ForbiddenException({ code: 'FORBIDDEN_ROLE' });
     }
 
-    return this.prisma.workspaceMember.update({
-      where: { id: member.id },
-      data: { role: dto.role },
-      include: {
-        user: {
-          select: {
-            id: true,
-            name: true,
-            email: true,
+    return this.prisma.$transaction(async (tx) => {
+      if (nextName) {
+        await tx.user.update({
+          where: { id: member.userId },
+          data: { name: nextName },
+        });
+      }
+
+      return tx.workspaceMember.update({
+        where: { id: member.id },
+        data: { role: nextRole },
+        include: {
+          user: {
+            select: {
+              id: true,
+              name: true,
+              email: true,
+            },
           },
         },
-      },
+      });
     });
   }
 
@@ -511,88 +650,97 @@ export class WorkspaceService {
     const staleDraftDate = new Date(now);
     staleDraftDate.setDate(staleDraftDate.getDate() - 7);
 
-    const baseWhere = {
-      workspaceId: user.workspaceId,
-      userId: { in: memberUserIds },
-      issuedAt: {
-        gte: start,
-        lte: now,
+    const quotes = await this.prisma.quote.findMany({
+      where: {
+        workspaceId: user.workspaceId,
+        createdAt: {
+          gte: start,
+          lte: now,
+        },
       },
-    };
-
-    const [
-      createdCounts,
-      statusCounts,
-      staleDraftCounts,
-      pendingAfterSendCounts,
-    ] = await Promise.all([
-      this.prisma.quote.groupBy({
-        by: ['userId'],
-        where: baseWhere,
-        _count: { userId: true },
-      }),
-      this.prisma.quote.groupBy({
-        by: ['userId', 'status'],
-        where: baseWhere,
-        _count: { status: true },
-      }),
-      this.prisma.quote.groupBy({
-        by: ['userId'],
-        where: {
-          ...baseWhere,
-          status: QuoteStatus.DRAFT,
-          createdAt: { lte: staleDraftDate },
+      select: {
+        userId: true,
+        status: true,
+        createdAt: true,
+        validUntil: true,
+        statusHistory: {
+          where: {
+            fromStatus: null,
+            toStatus: QuoteStatus.DRAFT,
+          },
+          orderBy: { changedAt: 'asc' },
+          take: 1,
+          select: { changedBy: true },
         },
-        _count: { userId: true },
-      }),
-      this.prisma.quote.groupBy({
-        by: ['userId'],
-        where: {
-          ...baseWhere,
-          status: { in: [QuoteStatus.SENT, QuoteStatus.VIEWED] },
-          validUntil: { lt: now },
-        },
-        _count: { userId: true },
-      }),
-    ]);
+      },
+    });
 
-    const createdByUserId = new Map(
-      createdCounts.map((entry) => [entry.userId, entry._count.userId]),
-    );
-    const statusByUserIdAndStatus = new Map(
-      statusCounts.map((entry) => [
-        `${entry.userId}:${entry.status}`,
-        entry._count.status,
+    const metricsByUserId = new Map<
+      string,
+      {
+        created: number;
+        accepted: number;
+        rejected: number;
+        cancelled: number;
+        staleDraft: number;
+        pendingAfterSend: number;
+      }
+    >(
+      memberUserIds.map((userId) => [
+        userId,
+        {
+          created: 0,
+          accepted: 0,
+          rejected: 0,
+          cancelled: 0,
+          staleDraft: 0,
+          pendingAfterSend: 0,
+        },
       ]),
     );
-    const staleDraftByUserId = new Map(
-      staleDraftCounts.map((entry) => [entry.userId, entry._count.userId]),
-    );
-    const pendingAfterSendByUserId = new Map(
-      pendingAfterSendCounts.map((entry) => [
-        entry.userId,
-        entry._count.userId,
-      ]),
-    );
+
+    for (const quote of quotes) {
+      const creatorId = quote.statusHistory[0]?.changedBy ?? quote.userId;
+      const metrics = metricsByUserId.get(creatorId);
+      if (!metrics) {
+        continue;
+      }
+
+      metrics.created += 1;
+
+      if (quote.status === QuoteStatus.ACCEPTED) {
+        metrics.accepted += 1;
+      }
+      if (quote.status === QuoteStatus.REJECTED) {
+        metrics.rejected += 1;
+      }
+      if (quote.status === QuoteStatus.CANCELLED) {
+        metrics.cancelled += 1;
+      }
+      if (
+        quote.status === QuoteStatus.DRAFT &&
+        quote.createdAt <= staleDraftDate
+      ) {
+        metrics.staleDraft += 1;
+      }
+      if (
+        (quote.status === QuoteStatus.SENT ||
+          quote.status === QuoteStatus.VIEWED) &&
+        quote.validUntil < now
+      ) {
+        metrics.pendingAfterSend += 1;
+      }
+    }
 
     return {
       items: members.map((member) => {
-        const created = createdByUserId.get(member.userId) ?? 0;
-        const accepted =
-          statusByUserIdAndStatus.get(
-            `${member.userId}:${QuoteStatus.ACCEPTED}`,
-          ) ?? 0;
-        const rejected =
-          statusByUserIdAndStatus.get(
-            `${member.userId}:${QuoteStatus.REJECTED}`,
-          ) ?? 0;
-        const cancelled =
-          statusByUserIdAndStatus.get(
-            `${member.userId}:${QuoteStatus.CANCELLED}`,
-          ) ?? 0;
-        const staleDraft = staleDraftByUserId.get(member.userId) ?? 0;
-        const pendingAfterSend =
-          pendingAfterSendByUserId.get(member.userId) ?? 0;
+        const metrics = metricsByUserId.get(member.userId);
+        const created = metrics?.created ?? 0;
+        const accepted = metrics?.accepted ?? 0;
+        const rejected = metrics?.rejected ?? 0;
+        const cancelled = metrics?.cancelled ?? 0;
+        const staleDraft = metrics?.staleDraft ?? 0;
+        const pendingAfterSend = metrics?.pendingAfterSend ?? 0;
         const noOutcome = cancelled + staleDraft + pendingAfterSend;
 
         return {
@@ -626,8 +774,79 @@ export class WorkspaceService {
     };
   }
 
+  async updateSellerGoal(
+    user: AuthUser,
+    memberId: string,
+    dto: UpdateSellerGoalDto,
+  ) {
+    if (user.role !== WorkspaceRole.OWNER) {
+      throw new ForbiddenException({ code: 'FORBIDDEN_ROLE' });
+    }
+
+    const member = await this.prisma.workspaceMember.findFirst({
+      where: { id: memberId, workspaceId: user.workspaceId },
+      select: { userId: true },
+    });
+
+    if (!member) {
+      throw new NotFoundException('Member not found');
+    }
+
+    const periodStart = this.parseGoalMonth(dto.month);
+    const acceptanceRateTarget =
+      dto.acceptanceRateTarget !== undefined
+        ? Math.min(Math.max(dto.acceptanceRateTarget, 0), 100) / 100
+        : undefined;
+
+    const goal = await this.prisma.sellerGoal.upsert({
+      where: {
+        workspaceId_userId_periodStart: {
+          workspaceId: user.workspaceId,
+          userId: member.userId,
+          periodStart,
+        },
+      },
+      create: {
+        workspaceId: user.workspaceId,
+        userId: member.userId,
+        periodStart,
+        quotesCreatedTarget: dto.quotesCreatedTarget ?? 0,
+        acceptedQuotesTarget: dto.acceptedQuotesTarget ?? 0,
+        paidRevenueTarget: new Prisma.Decimal(dto.paidRevenueTarget ?? 0),
+        acceptanceRateTarget: new Prisma.Decimal(acceptanceRateTarget ?? 0),
+      },
+      update: {
+        quotesCreatedTarget: dto.quotesCreatedTarget,
+        acceptedQuotesTarget: dto.acceptedQuotesTarget,
+        paidRevenueTarget:
+          dto.paidRevenueTarget !== undefined
+            ? new Prisma.Decimal(dto.paidRevenueTarget)
+            : undefined,
+        acceptanceRateTarget:
+          acceptanceRateTarget !== undefined
+            ? new Prisma.Decimal(acceptanceRateTarget)
+            : undefined,
+      },
+    });
+
+    return {
+      userId: goal.userId,
+      memberId,
+      periodStart: goal.periodStart.toISOString(),
+      month: this.monthKey(goal.periodStart),
+      quotesCreatedTarget: goal.quotesCreatedTarget,
+      acceptedQuotesTarget: goal.acceptedQuotesTarget,
+      paidRevenueTarget: new Prisma.Decimal(goal.paidRevenueTarget).toNumber(),
+      acceptanceRateTarget: new Prisma.Decimal(
+        goal.acceptanceRateTarget,
+      ).toNumber(),
+    };
+  }
+
   async getAdvancedMetrics(user: AuthUser, range: MetricsRange = 'month') {
-    this.assertManagerRole(user.role);
+    if (user.role !== WorkspaceRole.OWNER) {
+      throw new ForbiddenException({ code: 'FORBIDDEN_ROLE' });
+    }
     await this.subscriptionsService.assertCanUseAdvancedMetrics(
       user.workspaceId,
     );
@@ -641,7 +860,7 @@ export class WorkspaceService {
     const quotes = await this.prisma.quote.findMany({
       where: {
         workspaceId: user.workspaceId,
-        issuedAt: {
+        createdAt: {
           gte: start,
           lte: now,
         },
@@ -650,15 +869,26 @@ export class WorkspaceService {
         id: true,
         userId: true,
         status: true,
+        paymentStatus: true,
         total: true,
+        createdAt: true,
         issuedAt: true,
         sentAt: true,
         acceptedAt: true,
         rejectedAt: true,
         cancelledAt: true,
         validUntil: true,
+        statusHistory: {
+          where: {
+            fromStatus: null,
+            toStatus: QuoteStatus.DRAFT,
+          },
+          orderBy: { changedAt: 'asc' },
+          take: 1,
+          select: { changedBy: true },
+        },
       },
-      orderBy: { issuedAt: 'asc' },
+      orderBy: { createdAt: 'asc' },
     });
     const quotesQueryMs = Date.now() - quotesStartedAt;
 
@@ -676,6 +906,61 @@ export class WorkspaceService {
       },
     });
     const membersQueryMs = Date.now() - membersStartedAt;
+    const currentGoalPeriod = this.startOfMonth(now);
+    const goalRangeStart = this.startOfMonth(start);
+    const goals = await this.prisma.sellerGoal.findMany({
+      where: {
+        workspaceId: user.workspaceId,
+        userId: { in: members.map((member) => member.userId) },
+        periodStart: {
+          gte: goalRangeStart,
+          lte: currentGoalPeriod,
+        },
+      },
+    });
+    const goalsByUserId = new Map<
+      string,
+      {
+        quotesCreatedTarget: number;
+        acceptedQuotesTarget: number;
+        paidRevenueTarget: number;
+        acceptanceRateTarget: number;
+        acceptanceRateEntries: number;
+      }
+    >();
+
+    for (const goal of goals) {
+      const entry =
+        goalsByUserId.get(goal.userId) ??
+        {
+          quotesCreatedTarget: 0,
+          acceptedQuotesTarget: 0,
+          paidRevenueTarget: 0,
+          acceptanceRateTarget: 0,
+          acceptanceRateEntries: 0,
+        };
+      entry.quotesCreatedTarget += goal.quotesCreatedTarget;
+      entry.acceptedQuotesTarget += goal.acceptedQuotesTarget;
+      entry.paidRevenueTarget += new Prisma.Decimal(
+        goal.paidRevenueTarget,
+      ).toNumber();
+      const targetRate = new Prisma.Decimal(
+        goal.acceptanceRateTarget,
+      ).toNumber();
+      if (targetRate > 0) {
+        entry.acceptanceRateTarget += targetRate;
+        entry.acceptanceRateEntries += 1;
+      }
+      goalsByUserId.set(goal.userId, entry);
+    }
+    const currentGoalByUserId = new Map(
+      goals
+        .filter(
+          (goal) =>
+            goal.periodStart.getTime() === currentGoalPeriod.getTime(),
+        )
+        .map((goal) => [goal.userId, goal]),
+    );
     const computeStartedAt = Date.now();
 
     const funnel = {
@@ -695,32 +980,46 @@ export class WorkspaceService {
       string,
       {
         userId: string;
+        memberId: string;
         name: string;
         email: string;
         role: WorkspaceRole;
         createdCount: number;
+        draftCount: number;
         sentCount: number;
+        viewedCount: number;
         acceptedCount: number;
         rejectedCount: number;
+        cancelledCount: number;
         noOutcomeCount: number;
+        paidCount: number;
+        pendingPaymentCount: number;
         quotedRevenue: number;
         acceptedRevenue: number;
+        paidRevenue: number;
       }
     >();
 
     for (const member of members) {
       bySeller.set(member.userId, {
         userId: member.userId,
+        memberId: member.id,
         name: member.user.name ?? 'Sin nombre',
         email: member.user.email,
         role: member.role,
         createdCount: 0,
+        draftCount: 0,
         sentCount: 0,
+        viewedCount: 0,
         acceptedCount: 0,
         rejectedCount: 0,
+        cancelledCount: 0,
         noOutcomeCount: 0,
+        paidCount: 0,
+        pendingPaymentCount: 0,
         quotedRevenue: 0,
         acceptedRevenue: 0,
+        paidRevenue: 0,
       });
     }
 
@@ -737,7 +1036,8 @@ export class WorkspaceService {
     };
 
     for (const quote of quotes) {
-      const seller = bySeller.get(quote.userId);
+      const creatorId = quote.statusHistory[0]?.changedBy ?? quote.userId;
+      const seller = bySeller.get(creatorId);
       const total = new Prisma.Decimal(quote.total).toNumber();
 
       switch (quote.status) {
@@ -763,37 +1063,51 @@ export class WorkspaceService {
 
       if (quote.sentAt) {
         createdToSentHours.push(
-          this.hoursBetween(quote.issuedAt, quote.sentAt),
+          this.hoursBetween(quote.createdAt, quote.sentAt),
         );
       }
       if (quote.acceptedAt) {
         createdToAcceptedHours.push(
-          this.hoursBetween(quote.issuedAt, quote.acceptedAt),
+          this.hoursBetween(quote.createdAt, quote.acceptedAt),
         );
       }
       if (quote.rejectedAt) {
         createdToRejectedHours.push(
-          this.hoursBetween(quote.issuedAt, quote.rejectedAt),
+          this.hoursBetween(quote.createdAt, quote.rejectedAt),
         );
       }
 
       if (seller) {
         seller.createdCount += 1;
-        if (
-          quote.status === QuoteStatus.SENT ||
-          quote.status === QuoteStatus.VIEWED
-        ) {
-          seller.sentCount += 1;
-        }
-        if (quote.status === QuoteStatus.ACCEPTED) {
-          seller.acceptedCount += 1;
-          seller.acceptedRevenue += total;
-        }
-        if (quote.status === QuoteStatus.REJECTED) {
-          seller.rejectedCount += 1;
+        switch (quote.status) {
+          case QuoteStatus.DRAFT:
+            seller.draftCount += 1;
+            break;
+          case QuoteStatus.SENT:
+            seller.sentCount += 1;
+            break;
+          case QuoteStatus.VIEWED:
+            seller.viewedCount += 1;
+            break;
+          case QuoteStatus.ACCEPTED:
+            seller.acceptedCount += 1;
+            seller.acceptedRevenue += total;
+            break;
+          case QuoteStatus.REJECTED:
+            seller.rejectedCount += 1;
+            break;
+          case QuoteStatus.CANCELLED:
+            seller.cancelledCount += 1;
+            break;
         }
         if (isNoOutcome(quote)) {
           seller.noOutcomeCount += 1;
+        }
+        if (quote.paymentStatus === PaymentStatus.PAID) {
+          seller.paidCount += 1;
+          seller.paidRevenue += total;
+        } else {
+          seller.pendingPaymentCount += 1;
         }
         seller.quotedRevenue += total;
       }
@@ -846,13 +1160,64 @@ export class WorkspaceService {
       },
       totals,
       revenueBySeller: Array.from(bySeller.values())
-        .map((seller) => ({
-          ...seller,
-          acceptanceRate:
+        .map((seller) => {
+          const acceptanceRate =
             seller.createdCount > 0
               ? seller.acceptedCount / seller.createdCount
-              : 0,
-        }))
+              : 0;
+          const rawGoals = goalsByUserId.get(seller.userId);
+          const currentGoal = currentGoalByUserId.get(seller.userId);
+          const goals = {
+            periodStart: currentGoalPeriod.toISOString(),
+            month: this.monthKey(currentGoalPeriod),
+            quotesCreatedTarget: rawGoals?.quotesCreatedTarget ?? 0,
+            acceptedQuotesTarget: rawGoals?.acceptedQuotesTarget ?? 0,
+            paidRevenueTarget: rawGoals?.paidRevenueTarget ?? 0,
+            acceptanceRateTarget:
+              rawGoals && rawGoals.acceptanceRateEntries > 0
+                ? rawGoals.acceptanceRateTarget /
+                  rawGoals.acceptanceRateEntries
+                : 0,
+          };
+
+          return {
+            ...seller,
+            acceptanceRate,
+            goals,
+            currentMonthGoal: {
+              periodStart: currentGoalPeriod.toISOString(),
+              month: this.monthKey(currentGoalPeriod),
+              quotesCreatedTarget: currentGoal?.quotesCreatedTarget ?? 0,
+              acceptedQuotesTarget: currentGoal?.acceptedQuotesTarget ?? 0,
+              paidRevenueTarget: currentGoal
+                ? new Prisma.Decimal(currentGoal.paidRevenueTarget).toNumber()
+                : 0,
+              acceptanceRateTarget: currentGoal
+                ? new Prisma.Decimal(
+                    currentGoal.acceptanceRateTarget,
+                  ).toNumber()
+                : 0,
+            },
+            goalProgress: {
+              quotesCreated: this.progressRatio(
+                seller.createdCount,
+                goals.quotesCreatedTarget,
+              ),
+              acceptedQuotes: this.progressRatio(
+                seller.acceptedCount,
+                goals.acceptedQuotesTarget,
+              ),
+              paidRevenue: this.progressRatio(
+                seller.paidRevenue,
+                goals.paidRevenueTarget,
+              ),
+              acceptanceRate: this.progressRatio(
+                acceptanceRate,
+                goals.acceptanceRateTarget,
+              ),
+            },
+          };
+        })
         .sort((a, b) => b.acceptedRevenue - a.acceptedRevenue),
       trends,
       forecast: {
@@ -887,7 +1252,7 @@ export class WorkspaceService {
 
   private buildMonthlyTrend(
     quotes: Array<{
-      issuedAt: Date;
+      createdAt: Date;
       status: QuoteStatus;
       total: Prisma.Decimal;
     }>,
@@ -917,7 +1282,7 @@ export class WorkspaceService {
     }
 
     for (const quote of quotes) {
-      const bucketKey = `${quote.issuedAt.getFullYear()}-${String(quote.issuedAt.getMonth() + 1).padStart(2, '0')}`;
+      const bucketKey = `${quote.createdAt.getFullYear()}-${String(quote.createdAt.getMonth() + 1).padStart(2, '0')}`;
       const bucket = buckets.find((entry) => entry.month === bucketKey);
       if (!bucket) {
         continue;
@@ -943,6 +1308,39 @@ export class WorkspaceService {
   private hoursBetween(start: Date, end: Date): number {
     const ms = end.getTime() - start.getTime();
     return ms > 0 ? ms / 3_600_000 : 0;
+  }
+
+  private startOfMonth(value: Date): Date {
+    return new Date(value.getFullYear(), value.getMonth(), 1);
+  }
+
+  private monthKey(value: Date): string {
+    return `${value.getFullYear()}-${String(value.getMonth() + 1).padStart(2, '0')}`;
+  }
+
+  private parseGoalMonth(month?: string): Date {
+    if (!month) {
+      return this.startOfMonth(new Date());
+    }
+
+    const [year, rawMonth] = month.split('-').map((value) => Number(value));
+    if (
+      !Number.isInteger(year) ||
+      !Number.isInteger(rawMonth) ||
+      rawMonth < 1 ||
+      rawMonth > 12
+    ) {
+      throw new BadRequestException('Mes de objetivo invalido.');
+    }
+
+    return new Date(year, rawMonth - 1, 1);
+  }
+
+  private progressRatio(current: number, target: number): number {
+    if (!Number.isFinite(target) || target <= 0) {
+      return 0;
+    }
+    return Math.min(current / target, 1);
   }
 
   private average(values: number[]): number {

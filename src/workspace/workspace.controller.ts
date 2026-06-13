@@ -17,6 +17,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { WorkspaceRoleGuard } from '../auth/guards/workspace-role.guard';
 import type { AuthUser } from '../auth/types/auth-user';
 import { CreateWorkspaceInvitationDto } from './dto/create-workspace-invitation.dto';
+import { UpdateSellerGoalDto } from './dto/update-seller-goal.dto';
 import { UpdateWorkspaceMemberRoleDto } from './dto/update-workspace-member-role.dto';
 import { WorkspaceService } from './workspace.service';
 
@@ -90,6 +91,16 @@ export class WorkspaceController {
     return this.workspaceService.removeMember(user, memberId);
   }
 
+  @Patch('members/:memberId/goals')
+  @RequireWorkspaceRoles(WorkspaceRole.OWNER)
+  updateSellerGoal(
+    @CurrentUser() user: AuthUser,
+    @Param('memberId', ParseUUIDPipe) memberId: string,
+    @Body() dto: UpdateSellerGoalDto,
+  ) {
+    return this.workspaceService.updateSellerGoal(user, memberId, dto);
+  }
+
   @Get('members/metrics')
   @RequireWorkspaceRoles(WorkspaceRole.OWNER, WorkspaceRole.ADMIN)
   getMembersMetrics(
@@ -100,11 +111,17 @@ export class WorkspaceController {
   }
 
   @Get('metrics/advanced')
-  @RequireWorkspaceRoles(WorkspaceRole.OWNER, WorkspaceRole.ADMIN)
+  @RequireWorkspaceRoles(WorkspaceRole.OWNER)
   getAdvancedMetrics(
     @CurrentUser() user: AuthUser,
     @Query('range') range?: 'month' | 'quarter' | 'year',
   ) {
     return this.workspaceService.getAdvancedMetrics(user, range ?? 'month');
+  }
+
+  @Get('activity')
+  @RequireWorkspaceRoles(WorkspaceRole.OWNER, WorkspaceRole.ADMIN)
+  getActivity(@CurrentUser() user: AuthUser) {
+    return this.workspaceService.getActivity(user);
   }
 }

@@ -11,6 +11,7 @@ import {
   Prisma,
   QuoteStatus,
   TemplateType,
+  WorkspaceRole,
 } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
@@ -52,6 +53,7 @@ type QuoteListQuery = {
   folderId?: string;
   favoriteIds?: string;
   onlyFavorites?: string;
+  sellerId?: string;
 };
 
 type QuoteListPageResult = {
@@ -112,9 +114,13 @@ export class QuotesService {
       .quoteFolder;
   }
 
-  async list(userId: string, workspaceId: string): Promise<QuoteSummaryDto[]> {
+  async list(
+    userId: string,
+    role: WorkspaceRole,
+    workspaceId: string,
+  ): Promise<QuoteSummaryDto[]> {
     const quotes = await this.prisma.quote.findMany({
-      where: { workspaceId },
+      where: this.buildVisibleQuotesWhere(userId, role, workspaceId),
       orderBy: { createdAt: 'desc' },
       select: {
         id: true,
@@ -152,11 +158,13 @@ export class QuotesService {
 
   async getComposerBootstrap(
     userId: string,
+    role: WorkspaceRole,
     workspaceId: string,
   ): Promise<QuoteComposerBootstrapResult> {
     const profilingEnabled =
       process.env.PROFILE_QUOTES_COMPOSER_BOOTSTRAP === '1';
     const startedAt = Date.now();
+    const visibleWhere = this.buildVisibleQuotesWhere(userId, role, workspaceId);
 
     const nextQuoteNumberStartedAt = Date.now();
     const [nextQuoteNumber, recentQuotes, draftQuotes] = await Promise.all([
@@ -164,7 +172,7 @@ export class QuotesService {
       (async () => {
         const recentQuotesStartedAt = Date.now();
         const items = await this.prisma.quote.findMany({
-          where: { workspaceId },
+          where: visibleWhere,
           orderBy: { createdAt: 'desc' },
           take: 3,
           select: {
@@ -204,7 +212,9 @@ export class QuotesService {
         };
       })(),
       this.prisma.quote.findMany({
-        where: { workspaceId, status: QuoteStatus.DRAFT },
+        where: {
+          AND: [visibleWhere, { status: QuoteStatus.DRAFT }],
+        },
         orderBy: { updatedAt: 'desc' },
         take: 5,
         select: {
@@ -267,6 +277,7 @@ export class QuotesService {
 
   async listPage(
     userId: string,
+    role: WorkspaceRole,
     workspaceId: string,
     query: QuoteListQuery,
   ): Promise<QuoteListPageResult> {
@@ -281,12 +292,13 @@ export class QuotesService {
         page: 1,
         pageSize,
         totalPages: 1,
-        folderCounts: await this.listFolderCounts(workspaceId),
+        folderCounts: await this.listFolderCounts(userId, role, workspaceId),
       };
     }
 
     const where = this.buildQuoteListWhere(
       userId,
+      role,
       workspaceId,
       query,
       favoriteIds,
@@ -325,17 +337,20 @@ export class QuotesService {
             select: { id: true },
             take: 1,
           },
+          user: {
+            select: { id: true, name: true },
+          },
         },
       }),
       this.prisma.quote.count({ where }),
     ]);
-    const folderCounts = await this.listFolderCounts(workspaceId);
+    const folderCounts = await this.listFolderCounts(userId, role, workspaceId);
 
     const totalPages = Math.max(1, Math.ceil(total / pageSize));
     const safePage = Math.min(page, totalPages);
 
     if (safePage !== page) {
-      return this.listPage(userId, workspaceId, {
+      return this.listPage(userId, role, workspaceId, {
         ...query,
         page: String(safePage),
         pageSize: String(pageSize),
@@ -364,12 +379,13 @@ export class QuotesService {
 
   async setFavorite(
     userId: string,
+    role: WorkspaceRole,
     workspaceId: string,
     quoteId: string,
     isFavorite: boolean,
   ) {
     const quote = await this.prisma.quote.findFirst({
-      where: { id: quoteId, workspaceId },
+      where: this.buildVisibleQuoteByIdWhere(userId, role, workspaceId, quoteId),
       select: { id: true },
     });
 
@@ -462,9 +478,15 @@ export class QuotesService {
     return { success: true };
   }
 
-  async assignFolder(workspaceId: string, id: string, folderId: string | null) {
+  async assignFolder(
+    userId: string,
+    role: WorkspaceRole,
+    workspaceId: string,
+    id: string,
+    folderId: string | null,
+  ) {
     const quote = await this.prisma.quote.findFirst({
-      where: { id, workspaceId },
+      where: this.buildVisibleQuoteByIdWhere(userId, role, workspaceId, id),
       select: { id: true },
     });
 
@@ -485,9 +507,55 @@ export class QuotesService {
     });
   }
 
-  async get(workspaceId: string, id: string) {
+  /** Reasigna la cotizacion a otro miembro (vendedor) del workspace. */
+  async assignSeller(workspaceId: string, id: string, sellerId: string) {
     const quote = await this.prisma.quote.findFirst({
       where: { id, workspaceId },
+      select: { id: true },
+    });
+
+    if (!quote) {
+      throw new NotFoundException('Quote not found');
+    }
+
+    const [workspace, membership] = await Promise.all([
+      this.prisma.workspace.findUnique({
+        where: { id: workspaceId },
+        select: { ownerId: true },
+      }),
+      this.prisma.workspaceMember.findFirst({
+        where: { workspaceId, userId: sellerId },
+        select: { id: true },
+      }),
+    ]);
+
+    const isOwner = workspace?.ownerId === sellerId;
+    if (!isOwner && !membership) {
+      throw new BadRequestException('El vendedor no pertenece a este equipo');
+    }
+
+    const updated = await this.prisma.quote.update({
+      where: { id },
+      data: { userId: sellerId },
+      select: { user: { select: { id: true, name: true } } },
+    });
+
+    return {
+      success: true,
+      seller: updated.user
+        ? { id: updated.user.id, name: updated.user.name }
+        : null,
+    };
+  }
+
+  async get(
+    userId: string,
+    role: WorkspaceRole,
+    workspaceId: string,
+    id: string,
+  ) {
+    const quote = await this.prisma.quote.findFirst({
+      where: this.buildVisibleQuoteByIdWhere(userId, role, workspaceId, id),
       include: {
         sections: {
           orderBy: { position: 'asc' },
@@ -651,13 +719,25 @@ export class QuotesService {
 
   async update(
     userId: string,
+    role: WorkspaceRole,
     workspaceId: string,
     id: string,
     dto: UpdateQuoteDto,
   ) {
     const quote = await this.prisma.quote.findFirst({
-      where: { id, workspaceId },
-      include: { items: true },
+      where: this.buildVisibleQuoteByIdWhere(userId, role, workspaceId, id),
+      include: {
+        items: true,
+        statusHistory: {
+          where: {
+            fromStatus: null,
+            toStatus: QuoteStatus.DRAFT,
+          },
+          orderBy: { changedAt: 'asc' },
+          take: 1,
+          select: { changedBy: true },
+        },
+      },
     });
 
     if (!quote) {
@@ -697,6 +777,11 @@ export class QuotesService {
     const now = new Date();
 
     if (nextStatus && nextStatus !== quote.status) {
+      this.assertCanAdvanceQuoteStatus(
+        role,
+        userId,
+        quote.statusHistory[0]?.changedBy ?? quote.userId,
+      );
       this.assertStatusTransition(quote.status, nextStatus);
     }
 
@@ -713,7 +798,6 @@ export class QuotesService {
       const updated = await tx.quote.update({
         where: { id: quote.id },
         data: {
-          userId,
           workspaceId,
           status: nextStatus,
           paymentStatus: dto.paymentStatus,
@@ -787,12 +871,24 @@ export class QuotesService {
 
   async changeStatus(
     userId: string,
+    role: WorkspaceRole,
     workspaceId: string,
     id: string,
     status: QuoteStatus,
   ) {
     const quote = await this.prisma.quote.findFirst({
-      where: { id, workspaceId },
+      where: this.buildVisibleQuoteByIdWhere(userId, role, workspaceId, id),
+      include: {
+        statusHistory: {
+          where: {
+            fromStatus: null,
+            toStatus: QuoteStatus.DRAFT,
+          },
+          orderBy: { changedAt: 'asc' },
+          take: 1,
+          select: { changedBy: true },
+        },
+      },
     });
 
     if (!quote) {
@@ -800,9 +896,14 @@ export class QuotesService {
     }
 
     if (quote.status === status) {
-      return this.get(workspaceId, id);
+      return this.get(userId, role, workspaceId, id);
     }
 
+    this.assertCanAdvanceQuoteStatus(
+      role,
+      userId,
+      quote.statusHistory[0]?.changedBy ?? quote.userId,
+    );
     this.assertStatusTransition(quote.status, status);
     const now = new Date();
 
@@ -841,11 +942,16 @@ export class QuotesService {
     });
   }
 
-  async duplicate(userId: string, workspaceId: string, id: string) {
+  async duplicate(
+    userId: string,
+    role: WorkspaceRole,
+    workspaceId: string,
+    id: string,
+  ) {
     await this.subscriptionsService.assertCanCreateQuote(userId);
 
     const source = await this.prisma.quote.findFirst({
-      where: { id, workspaceId },
+      where: this.buildVisibleQuoteByIdWhere(userId, role, workspaceId, id),
       include: {
         sections: {
           orderBy: { position: 'asc' },
@@ -960,9 +1066,14 @@ export class QuotesService {
     );
   }
 
-  async remove(workspaceId: string, id: string) {
+  async remove(
+    userId: string,
+    role: WorkspaceRole,
+    workspaceId: string,
+    id: string,
+  ) {
     const quote = await this.prisma.quote.findFirst({
-      where: { id, workspaceId },
+      where: this.buildVisibleQuoteByIdWhere(userId, role, workspaceId, id),
     });
     if (!quote) {
       throw new NotFoundException('Quote not found');
@@ -970,11 +1081,16 @@ export class QuotesService {
     return this.prisma.quote.delete({ where: { id: quote.id } });
   }
 
-  async exportPdf(userId: string, workspaceId: string, id: string) {
+  async exportPdf(
+    userId: string,
+    role: WorkspaceRole,
+    workspaceId: string,
+    id: string,
+  ) {
     const { watermark } =
       await this.subscriptionsService.assertCanExportPdf(userId);
     const quote = await this.prisma.quote.findFirst({
-      where: { id, workspaceId },
+      where: this.buildVisibleQuoteByIdWhere(userId, role, workspaceId, id),
       include: {
         items: { orderBy: { position: 'asc' } },
         sections: {
@@ -1060,6 +1176,21 @@ export class QuotesService {
         `Invalid status transition from ${from} to ${to}`,
       );
     }
+  }
+
+  private assertCanAdvanceQuoteStatus(
+    role: WorkspaceRole,
+    userId: string,
+    creatorId: string | null,
+  ) {
+    if (role === WorkspaceRole.OWNER || creatorId === userId) {
+      return;
+    }
+
+    throw new ForbiddenException({
+      code: 'FORBIDDEN_QUOTE_STATUS_OWNER',
+      message: 'Solo puedes avanzar estados de cotizaciones creadas por ti.',
+    });
   }
 
   private getStatusTransitionPatch(status: QuoteStatus, at: Date) {
@@ -1357,6 +1488,7 @@ export class QuotesService {
     paymentStatus: PaymentStatus;
     _count: { items: number };
     favorites?: Array<{ id: string }>;
+    user?: { id: string; name: string | null } | null;
   }) {
     return {
       id: quote.id,
@@ -1378,6 +1510,7 @@ export class QuotesService {
       paymentStatus: quote.paymentStatus,
       itemsCount: quote._count.items,
       isFavorite: (quote.favorites?.length ?? 0) > 0,
+      seller: quote.user ? { id: quote.user.id, name: quote.user.name } : null,
     };
   }
 
@@ -1400,8 +1533,68 @@ export class QuotesService {
       .filter((entry) => /^[0-9a-f-]{36}$/i.test(entry));
   }
 
+  private canSeeAllQuotes(role: WorkspaceRole): boolean {
+    return role === WorkspaceRole.OWNER;
+  }
+
+  private buildCreatedByUserWhere(userId: string): Prisma.QuoteWhereInput {
+    return {
+      OR: [
+        {
+          statusHistory: {
+            some: {
+              fromStatus: null,
+              toStatus: QuoteStatus.DRAFT,
+              changedBy: userId,
+            },
+          },
+        },
+        {
+          AND: [
+            { userId },
+            {
+              statusHistory: {
+                none: {
+                  fromStatus: null,
+                  toStatus: QuoteStatus.DRAFT,
+                },
+              },
+            },
+          ],
+        },
+      ],
+    };
+  }
+
+  private buildVisibleQuotesWhere(
+    userId: string,
+    role: WorkspaceRole,
+    workspaceId: string,
+  ): Prisma.QuoteWhereInput {
+    if (this.canSeeAllQuotes(role)) {
+      return { workspaceId };
+    }
+
+    return {
+      workspaceId,
+      AND: [this.buildCreatedByUserWhere(userId)],
+    };
+  }
+
+  private buildVisibleQuoteByIdWhere(
+    userId: string,
+    role: WorkspaceRole,
+    workspaceId: string,
+    id: string,
+  ): Prisma.QuoteWhereInput {
+    return {
+      AND: [this.buildVisibleQuotesWhere(userId, role, workspaceId), { id }],
+    };
+  }
+
   private buildQuoteListWhere(
     userId: string,
+    role: WorkspaceRole,
     workspaceId: string,
     query: QuoteListQuery,
     favoriteIds: string[],
@@ -1421,6 +1614,16 @@ export class QuotesService {
     const folderId = query.folderId?.trim();
 
     const where: Prisma.QuoteWhereInput = { workspaceId };
+    const andFilters: Prisma.QuoteWhereInput[] = [];
+
+    if (!this.canSeeAllQuotes(role)) {
+      andFilters.push(this.buildCreatedByUserWhere(userId));
+    }
+
+    const sellerId = query.sellerId?.trim();
+    if (sellerId) {
+      where.userId = sellerId;
+    }
 
     if (folderId) {
       where.folderId = folderId === 'none' ? null : folderId;
@@ -1463,15 +1666,12 @@ export class QuotesService {
     }
 
     if (client) {
-      where.AND = [
-        ...(Array.isArray(where.AND) ? where.AND : []),
-        {
-          clientData: {
-            path: ['name'],
-            string_contains: client,
-          },
+      andFilters.push({
+        clientData: {
+          path: ['name'],
+          string_contains: client,
         },
-      ];
+      });
     }
 
     const statusFilter = this.mapVisibleStatus(query.status);
@@ -1497,6 +1697,10 @@ export class QuotesService {
       } as Prisma.DecimalFilter;
     }
 
+    if (andFilters.length > 0) {
+      where.AND = andFilters;
+    }
+
     return where;
   }
 
@@ -1518,11 +1722,13 @@ export class QuotesService {
   }
 
   private async listFolderCounts(
+    userId: string,
+    role: WorkspaceRole,
     workspaceId: string,
   ): Promise<Record<string, number>> {
     const grouped = await this.prisma.quote.groupBy({
       by: ['folderId'],
-      where: { workspaceId },
+      where: this.buildVisibleQuotesWhere(userId, role, workspaceId),
       _count: {
         _all: true,
       },

@@ -23,4 +23,5 @@ export class QuoteSummaryDto {
   paymentStatus!: PaymentStatus;
   itemsCount!: number;
   isFavorite!: boolean;
+  seller!: { id: string; name: string | null } | null;
 }
