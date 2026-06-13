@@ -45,6 +45,24 @@ export class WorkspaceController {
     return this.workspaceService.listInvitations(user);
   }
 
+  @Post('invitations/:invitationId/regenerate')
+  @RequireWorkspaceRoles(WorkspaceRole.OWNER, WorkspaceRole.ADMIN)
+  regenerateInvitation(
+    @CurrentUser() user: AuthUser,
+    @Param('invitationId', ParseUUIDPipe) invitationId: string,
+  ) {
+    return this.workspaceService.regenerateInvitation(user, invitationId);
+  }
+
+  @Delete('invitations/:invitationId')
+  @RequireWorkspaceRoles(WorkspaceRole.OWNER, WorkspaceRole.ADMIN)
+  revokeInvitation(
+    @CurrentUser() user: AuthUser,
+    @Param('invitationId', ParseUUIDPipe) invitationId: string,
+  ) {
+    return this.workspaceService.revokeInvitation(user, invitationId);
+  }
+
   @Post('invitations/:token/accept')
   acceptInvitation(
     @CurrentUser() user: AuthUser,

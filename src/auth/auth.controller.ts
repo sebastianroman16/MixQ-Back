@@ -1,5 +1,7 @@
 import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
 import { ActivateInvitationDto } from './dto/activate-invitation.dto';
+import { ActivateInvitationByCredentialsDto } from './dto/activate-invitation-by-credentials.dto';
+import { VerifyInvitationCredentialsDto } from './dto/verify-invitation-credentials.dto';
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
@@ -47,6 +49,30 @@ export class AuthController {
   })
   activateInvitation(@Body() dto: ActivateInvitationDto) {
     return this.authService.activateInvitation(dto);
+  }
+
+  @Post('invitations/verify-credentials')
+  @UseGuards(AuthRateLimitGuard)
+  @AuthRateLimit({
+    keyPrefix: 'auth:invitation:verify-credentials',
+    limit: 10,
+    windowMs: 15 * 60 * 1000,
+    bodyFields: ['email'],
+  })
+  verifyInvitationCredentials(@Body() dto: VerifyInvitationCredentialsDto) {
+    return this.authService.verifyInvitationCredentials(dto);
+  }
+
+  @Post('invitations/activate-credentials')
+  @UseGuards(AuthRateLimitGuard)
+  @AuthRateLimit({
+    keyPrefix: 'auth:invitation:activate-credentials',
+    limit: 6,
+    windowMs: 15 * 60 * 1000,
+    bodyFields: ['email'],
+  })
+  activateInvitationByCredentials(@Body() dto: ActivateInvitationByCredentialsDto) {
+    return this.authService.activateInvitationByCredentials(dto);
   }
 
   @Get('invitations/:token/summary')

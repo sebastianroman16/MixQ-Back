@@ -9,7 +9,6 @@ import { Prisma, QuoteStatus, WorkspaceRole } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'crypto';
 import { AuthUser } from '../auth/types/auth-user';
-import { InvitationMailService } from '../mail/invitation-mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateWorkspaceInvitationDto } from './dto/create-workspace-invitation.dto';
@@ -24,7 +23,6 @@ export class WorkspaceService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly subscriptionsService: SubscriptionsService,
-    private readonly invitationMailService: InvitationMailService,
   ) {}
 
   async getMe(user: AuthUser) {
@@ -46,13 +44,13 @@ export class WorkspaceService {
         invitations: {
           where: {
             acceptedAt: null,
-            expiresAt: { gt: new Date() },
           },
           orderBy: { createdAt: 'desc' },
           select: {
             id: true,
             email: true,
             role: true,
+            token: true,
             expiresAt: true,
             createdAt: true,
           },
@@ -63,6 +61,9 @@ export class WorkspaceService {
     if (!workspace) {
       throw new NotFoundException('Workspace not found');
     }
+
+    const isManager =
+      user.role === WorkspaceRole.OWNER || user.role === WorkspaceRole.ADMIN;
 
     return {
       id: workspace.id,
@@ -76,7 +77,14 @@ export class WorkspaceService {
         createdAt: member.createdAt,
         user: member.user,
       })),
-      invitations: workspace.invitations,
+      // Las invitaciones llevan el enlace de activacion, asi que solo las ven
+      // los roles que pueden gestionarlas.
+      invitations: isManager
+        ? workspace.invitations.map(({ token, ...invitation }) => ({
+            ...invitation,
+            invitationUrl: this.buildInvitationUrl(token),
+          }))
+        : [],
     };
   }
 
@@ -129,20 +137,6 @@ export class WorkspaceService {
 
     const temporaryPassword = this.generateTemporaryPassword();
     const temporaryPasswordHash = await bcrypt.hash(temporaryPassword, 10);
-    const [workspace, inviter] = await Promise.all([
-      this.prisma.workspace.findUnique({
-        where: { id: user.workspaceId },
-        select: { name: true },
-      }),
-      this.prisma.user.findUnique({
-        where: { id: user.id },
-        select: { name: true, email: true },
-      }),
-    ]);
-
-    if (!workspace) {
-      throw new NotFoundException('Workspace not found');
-    }
 
     const { invitation } = await this.prisma.$transaction(async (tx) => {
       const existingUser = await tx.user.findFirst({
@@ -157,9 +151,20 @@ export class WorkspaceService {
 
       if (existingUser) {
         if (!existingUser.mustChangePassword) {
-          throw new BadRequestException(
-            'Email already belongs to an active account',
-          );
+          // Un subperfil eliminado deja el User huerfano (sin membresias ni
+          // workspace propio); se conserva para no borrar en cascada sus
+          // cotizaciones, asi que aqui se permite re-invitarlo. Una cuenta
+          // real siempre tiene membresia u workspace propio y no se toca.
+          const [memberships, ownedWorkspaces] = await Promise.all([
+            tx.workspaceMember.count({ where: { userId: existingUser.id } }),
+            tx.workspace.count({ where: { ownerId: existingUser.id } }),
+          ]);
+
+          if (memberships > 0 || ownedWorkspaces > 0) {
+            throw new BadRequestException(
+              'Email already belongs to an active account',
+            );
+          }
         }
 
         await tx.user.update({
@@ -168,6 +173,7 @@ export class WorkspaceService {
             name: normalizedName,
             passwordHash: temporaryPasswordHash,
             mustChangePassword: true,
+            workspaceId: null,
             tokenVersion: {
               increment: 1,
             },
@@ -184,6 +190,15 @@ export class WorkspaceService {
         });
       }
 
+      // Evita acumular invitaciones pendientes duplicadas para el mismo correo.
+      await tx.workspaceInvitation.deleteMany({
+        where: {
+          workspaceId: user.workspaceId,
+          email: normalizedEmail,
+          acceptedAt: null,
+        },
+      });
+
       const invitation = await tx.workspaceInvitation.create({
         data: {
           workspaceId: user.workspaceId,
@@ -198,28 +213,113 @@ export class WorkspaceService {
       return { invitation };
     });
 
-    const emailDelivery =
-      await this.invitationMailService.sendWorkspaceInvitationEmail({
-        to: normalizedEmail,
-        invitedUserName: normalizedName,
-        workspaceName: workspace.name,
-        invitedByName: inviter?.name ?? inviter?.email ?? null,
-        roleLabel: dto.role,
-        token: invitation.token,
-        temporaryPassword,
-      });
-
-    const response: Record<string, unknown> = {
+    // No hay envio de email: el owner comparte el enlace y la contrasena
+    // temporal por el canal que prefiera, asi que siempre se devuelven.
+    return {
       ...invitation,
       invitationUrl: this.buildInvitationUrl(invitation.token),
-      emailDelivery,
+      temporaryPassword,
     };
+  }
 
-    if (process.env.NODE_ENV !== 'production') {
-      response.temporaryPassword = temporaryPassword;
+  async regenerateInvitation(user: AuthUser, invitationId: string) {
+    this.assertManagerRole(user.role);
+
+    const invitation = await this.prisma.workspaceInvitation.findFirst({
+      where: {
+        id: invitationId,
+        workspaceId: user.workspaceId,
+        acceptedAt: null,
+      },
+    });
+
+    if (!invitation) {
+      throw new NotFoundException('Invitation not found');
     }
 
-    return response;
+    if (
+      invitation.role === WorkspaceRole.OWNER &&
+      user.role !== WorkspaceRole.OWNER
+    ) {
+      throw new ForbiddenException({ code: 'FORBIDDEN_ROLE' });
+    }
+
+    const invitedUser = await this.prisma.user.findFirst({
+      where: {
+        email: {
+          equals: invitation.email,
+          mode: 'insensitive',
+        },
+      },
+      select: { id: true, mustChangePassword: true },
+    });
+
+    if (!invitedUser || !invitedUser.mustChangePassword) {
+      throw new BadRequestException(
+        'Invitation can no longer be regenerated for this email',
+      );
+    }
+
+    const temporaryPassword = this.generateTemporaryPassword();
+    const temporaryPasswordHash = await bcrypt.hash(temporaryPassword, 10);
+    const expiresAt = new Date();
+    expiresAt.setDate(expiresAt.getDate() + 7);
+
+    const updated = await this.prisma.$transaction(async (tx) => {
+      await tx.user.update({
+        where: { id: invitedUser.id },
+        data: {
+          passwordHash: temporaryPasswordHash,
+          mustChangePassword: true,
+          tokenVersion: {
+            increment: 1,
+          },
+        },
+      });
+
+      return tx.workspaceInvitation.update({
+        where: { id: invitation.id },
+        data: {
+          token: randomUUID(),
+          expiresAt,
+        },
+      });
+    });
+
+    return {
+      ...updated,
+      invitationUrl: this.buildInvitationUrl(updated.token),
+      temporaryPassword,
+    };
+  }
+
+  async revokeInvitation(user: AuthUser, invitationId: string) {
+    this.assertManagerRole(user.role);
+
+    const invitation = await this.prisma.workspaceInvitation.findFirst({
+      where: {
+        id: invitationId,
+        workspaceId: user.workspaceId,
+        acceptedAt: null,
+      },
+    });
+
+    if (!invitation) {
+      throw new NotFoundException('Invitation not found');
+    }
+
+    if (
+      invitation.role === WorkspaceRole.OWNER &&
+      user.role !== WorkspaceRole.OWNER
+    ) {
+      throw new ForbiddenException({ code: 'FORBIDDEN_ROLE' });
+    }
+
+    await this.prisma.workspaceInvitation.delete({
+      where: { id: invitation.id },
+    });
+
+    return { success: true };
   }
 
   private generateTemporaryPassword() {
@@ -367,7 +467,21 @@ export class WorkspaceService {
       await this.assertMoreThanOneOwner(user.workspaceId, member.id);
     }
 
-    return this.prisma.workspaceMember.delete({ where: { id: member.id } });
+    const [deleted] = await this.prisma.$transaction([
+      this.prisma.workspaceMember.delete({ where: { id: member.id } }),
+      // Si la sesion del usuario seguia apuntando a este workspace, se
+      // desvincula y se invalidan sus tokens; si no, su proximo login lo
+      // volveria a agregar como miembro via ensureWorkspaceForUser.
+      this.prisma.user.updateMany({
+        where: { id: member.userId, workspaceId: member.workspaceId },
+        data: {
+          workspaceId: null,
+          tokenVersion: { increment: 1 },
+        },
+      }),
+    ]);
+
+    return deleted;
   }
 
   async getMembersMetrics(user: AuthUser, range: MetricsRange = 'month') {

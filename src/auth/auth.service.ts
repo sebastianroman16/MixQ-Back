@@ -6,10 +6,12 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
-import { User, WorkspaceRole } from '@prisma/client';
+import { User, WorkspaceInvitation, WorkspaceRole } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service';
 import { ActivateInvitationDto } from './dto/activate-invitation.dto';
+import { ActivateInvitationByCredentialsDto } from './dto/activate-invitation-by-credentials.dto';
+import { VerifyInvitationCredentialsDto } from './dto/verify-invitation-credentials.dto';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
 
@@ -222,6 +224,81 @@ export class AuthService {
       throw new UnauthorizedException('Invalid invitation credentials');
     }
 
+    return this.completeInvitationActivation(
+      invitation,
+      normalizedEmail,
+      dto.temporaryPassword,
+      dto.newPassword,
+    );
+  }
+
+  async activateInvitationByCredentials(dto: ActivateInvitationByCredentialsDto) {
+    const normalizedEmail = dto.email.trim().toLowerCase();
+    const invitation = await this.findPendingInvitationByEmail(normalizedEmail);
+
+    return this.completeInvitationActivation(
+      invitation,
+      normalizedEmail,
+      dto.temporaryPassword,
+      dto.newPassword,
+    );
+  }
+
+  /**
+   * Valida correo + contrasena temporal sin activar nada, para que el flujo
+   * por pasos pueda avanzar mostrando a que workspace y rol va a entrar.
+   */
+  async verifyInvitationCredentials(dto: VerifyInvitationCredentialsDto) {
+    const normalizedEmail = dto.email.trim().toLowerCase();
+    const invitation = await this.findPendingInvitationByEmail(normalizedEmail);
+    await this.assertInvitedUserCredentials(
+      normalizedEmail,
+      dto.temporaryPassword,
+    );
+
+    return {
+      workspaceName: invitation.workspace.name,
+      role: invitation.role,
+      expiresAt: invitation.expiresAt,
+    };
+  }
+
+  private async findPendingInvitationByEmail(normalizedEmail: string) {
+    const invitation = await this.prisma.workspaceInvitation.findFirst({
+      where: {
+        email: {
+          equals: normalizedEmail,
+          mode: 'insensitive',
+        },
+        acceptedAt: null,
+      },
+      orderBy: { createdAt: 'desc' },
+      include: {
+        workspace: {
+          select: {
+            id: true,
+            name: true,
+          },
+        },
+      },
+    });
+
+    // Mismo error que credenciales invalidas para no revelar si el correo existe.
+    if (!invitation) {
+      throw new UnauthorizedException('Invalid invitation credentials');
+    }
+
+    if (invitation.expiresAt <= new Date()) {
+      throw new BadRequestException({ code: 'INVITATION_EXPIRED' });
+    }
+
+    return invitation;
+  }
+
+  private async assertInvitedUserCredentials(
+    normalizedEmail: string,
+    temporaryPassword: string,
+  ) {
     const user = await this.prisma.user.findFirst({
       where: {
         email: {
@@ -236,14 +313,30 @@ export class AuthService {
     }
 
     const temporaryPasswordMatches = await bcrypt.compare(
-      dto.temporaryPassword,
+      temporaryPassword,
       user.passwordHash,
     );
     if (!temporaryPasswordMatches) {
       throw new UnauthorizedException('Invalid invitation credentials');
     }
 
-    const nextPasswordHash = await bcrypt.hash(dto.newPassword, 10);
+    return user;
+  }
+
+  private async completeInvitationActivation(
+    invitation: WorkspaceInvitation & {
+      workspace: { id: string; name: string };
+    },
+    normalizedEmail: string,
+    temporaryPassword: string,
+    newPassword: string,
+  ) {
+    const user = await this.assertInvitedUserCredentials(
+      normalizedEmail,
+      temporaryPassword,
+    );
+
+    const nextPasswordHash = await bcrypt.hash(newPassword, 10);
 
     await this.prisma.$transaction(async (tx) => {
       await tx.workspaceMember.upsert({
