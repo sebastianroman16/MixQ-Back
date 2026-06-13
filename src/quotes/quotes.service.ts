@@ -971,7 +971,8 @@ export class QuotesService {
   }
 
   async exportPdf(userId: string, workspaceId: string, id: string) {
-    await this.subscriptionsService.assertCanExportPdf(userId);
+    const { watermark } =
+      await this.subscriptionsService.assertCanExportPdf(userId);
     const quote = await this.prisma.quote.findFirst({
       where: { id, workspaceId },
       include: {
@@ -1000,6 +1001,7 @@ export class QuotesService {
       })),
       templateName: quote.template?.name ?? null,
       templateTheme: quote.template?.theme ?? null,
+      watermark,
     });
 
     return this.pdfRenderer.renderPdf(html);

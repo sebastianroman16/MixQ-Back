@@ -5,12 +5,16 @@ import {
 } from '@nestjs/common';
 import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
+import { SubscriptionsService } from '../subscriptions/subscriptions.service';
 import { CreateFrequentClientDto } from './dto/create-frequent-client.dto';
 import { UpdateFrequentClientDto } from './dto/update-frequent-client.dto';
 
 @Injectable()
 export class FrequentClientsService {
-  constructor(private readonly prisma: PrismaService) {}
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly subscriptionsService: SubscriptionsService,
+  ) {}
 
   list(workspaceId: string) {
     return this.prisma.frequentClient.findMany({
@@ -24,6 +28,7 @@ export class FrequentClientsService {
     workspaceId: string,
     dto: CreateFrequentClientDto,
   ) {
+    await this.subscriptionsService.assertCanCreateFrequentClient(userId);
     try {
       return await this.prisma.frequentClient.create({
         data: {

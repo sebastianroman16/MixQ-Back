@@ -39,6 +39,8 @@ type QuotePdfData = {
   sections?: QuotePdfSection[];
   templateName?: string | null;
   templateTheme?: Prisma.JsonValue | null;
+  /** Plan FREE: agrega marca de agua "Hecho con MixQ". */
+  watermark?: boolean;
 };
 
 const MONTHS = [
@@ -291,6 +293,31 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
       }
       html, body { width: 100%; }
       h1, h2, h3, h4, p { margin: 0; }
+      .mixq-watermark {
+        position: fixed;
+        top: 50%;
+        left: 50%;
+        transform: translate(-50%, -50%) rotate(-30deg);
+        font-size: 70px;
+        font-weight: 800;
+        letter-spacing: 4px;
+        color: rgba(99, 102, 241, 0.08);
+        text-transform: uppercase;
+        white-space: nowrap;
+        pointer-events: none;
+        z-index: 0;
+      }
+      .mixq-watermark-footer {
+        position: fixed;
+        bottom: 4mm;
+        left: 0;
+        right: 0;
+        text-align: center;
+        font-size: 9px;
+        letter-spacing: 1px;
+        color: rgba(99, 102, 241, 0.55);
+        z-index: 0;
+      }
       body {
         margin: 0;
         padding: 0;
@@ -469,6 +496,12 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
     </style>
   </head>
   <body>
+    ${
+      quote.watermark
+        ? `<div class="mixq-watermark">Hecho con MixQ</div>
+    <div class="mixq-watermark-footer">Cotizacion generada con MixQ · mixq.app</div>`
+        : ''
+    }
     <section class="preview">
       <div class="preview__sheet">
         <header class="preview__header">

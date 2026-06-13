@@ -19,6 +19,7 @@ import { FlowClientService } from './flow/flow-client.service';
 import { FlowInvoice, FlowSubscription } from './flow/flow.types';
 import {
   BUSINESS_LIMITS,
+  FEATURE_MIN_PLAN,
   FREE_LIMITS,
   PLAN_CATALOG,
   PRO_LIMITS,
@@ -74,20 +75,38 @@ export class SubscriptionsService {
   }
 
   async getUsage(workspaceId: string) {
-    const [quotesCount, templatesCount, servicesCount, membersCount] =
-      await Promise.all([
-        this.prisma.quote.count({ where: { workspaceId } }),
-        this.prisma.template.count({ where: { workspaceId, type: 'USER' } }),
-        this.prisma.service.count({ where: { workspaceId } }),
-        this.prisma.workspaceMember.count({
-          where: {
-            workspaceId,
-            role: { not: 'OWNER' },
-          },
-        }),
-      ]);
+    const monthStart = this.startOfCurrentMonth();
+    const [
+      quotesCount,
+      quotesThisMonth,
+      templatesCount,
+      servicesCount,
+      frequentClientsCount,
+      membersCount,
+    ] = await Promise.all([
+      this.prisma.quote.count({ where: { workspaceId } }),
+      this.prisma.quote.count({
+        where: { workspaceId, createdAt: { gte: monthStart } },
+      }),
+      this.prisma.template.count({ where: { workspaceId, type: 'USER' } }),
+      this.prisma.service.count({ where: { workspaceId } }),
+      this.prisma.frequentClient.count({ where: { workspaceId } }),
+      this.prisma.workspaceMember.count({
+        where: {
+          workspaceId,
+          role: { not: 'OWNER' },
+        },
+      }),
+    ]);
 
-    return { quotesCount, templatesCount, servicesCount, membersCount };
+    return {
+      quotesCount,
+      quotesThisMonth,
+      templatesCount,
+      servicesCount,
+      frequentClientsCount,
+      membersCount,
+    };
   }
 
   async getSubscriptionSummary(userId: string) {
@@ -424,11 +443,39 @@ export class SubscriptionsService {
     await this.assertLimit(userId, 'services');
   }
 
-  async assertCanExportPdf(userId: string) {
+  async assertCanCreateFrequentClient(userId: string) {
+    await this.assertLimit(userId, 'frequent_clients');
+  }
+
+  /**
+   * Verifica que el plan permita exportar PDF y devuelve si el PDF resultante
+   * debe llevar marca de agua (plan FREE).
+   */
+  async assertCanExportPdf(userId: string): Promise<{ watermark: boolean }> {
     const entitlement = await this.getWorkspaceEntitlementByUser(userId);
+
+    if (!this.isEntitlementUsable(entitlement)) {
+      throw this.planLimitError('export_pdf');
+    }
+
     const limits = this.getLimits(entitlement.plan);
     if (!limits.exportPdf) {
-      throw this.planLimitError('export_pdf', PlanType.PRO);
+      throw this.planLimitError('export_pdf');
+    }
+
+    return { watermark: limits.pdfWatermark };
+  }
+
+  async assertCanUseAdvancedMetrics(workspaceId: string) {
+    const entitlement = await this.getWorkspaceEntitlement(workspaceId);
+
+    if (!this.isEntitlementUsable(entitlement)) {
+      throw this.planLimitError('advanced_metrics');
+    }
+
+    const limits = this.getLimits(entitlement.plan);
+    if (!limits.advancedMetrics) {
+      throw this.planLimitError('advanced_metrics');
     }
   }
 
@@ -436,15 +483,13 @@ export class SubscriptionsService {
     const entitlement = await this.getWorkspaceEntitlement(workspaceId);
 
     if (!this.isEntitlementUsable(entitlement)) {
-      throw this.planLimitError('workspace_members', PlanType.PRO);
+      throw this.planLimitError('workspace_members');
     }
 
     const limits = this.getLimits(entitlement.plan);
     const usage = await this.getUsage(workspaceId);
-    if (usage.membersCount >= limits.maxWorkspaceMembers) {
-      const planRequired =
-        entitlement.plan === PlanType.PRO ? PlanType.BUSINESS : PlanType.PRO;
-      throw this.planLimitError('workspace_members', planRequired);
+    if (this.isOverLimit(usage.membersCount, limits.maxWorkspaceMembers)) {
+      throw this.planLimitError('workspace_members');
     }
   }
 
@@ -452,26 +497,49 @@ export class SubscriptionsService {
     const entitlement = await this.getWorkspaceEntitlementByUser(userId);
 
     if (!this.isEntitlementUsable(entitlement)) {
-      throw this.planLimitError(feature, PlanType.PRO);
+      throw this.planLimitError(feature);
     }
 
     const limits = this.getLimits(entitlement.plan);
     const usage = await this.getUsage(entitlement.workspaceId);
 
-    if (feature === 'quotes' && usage.quotesCount >= limits.maxQuotes) {
-      throw this.planLimitError('quotes', PlanType.PRO);
+    if (
+      feature === 'quotes' &&
+      this.isOverLimit(usage.quotesThisMonth, limits.maxQuotesPerMonth)
+    ) {
+      throw this.planLimitError('quotes');
     }
 
     if (
       feature === 'templates' &&
-      usage.templatesCount >= limits.maxTemplates
+      this.isOverLimit(usage.templatesCount, limits.maxTemplates)
     ) {
-      throw this.planLimitError('templates', PlanType.PRO);
+      throw this.planLimitError('templates');
     }
 
-    if (feature === 'services' && usage.servicesCount >= limits.maxServices) {
-      throw this.planLimitError('services', PlanType.PRO);
+    if (
+      feature === 'services' &&
+      this.isOverLimit(usage.servicesCount, limits.maxServices)
+    ) {
+      throw this.planLimitError('services');
     }
+
+    if (
+      feature === 'frequent_clients' &&
+      this.isOverLimit(usage.frequentClientsCount, limits.maxFrequentClients)
+    ) {
+      throw this.planLimitError('frequent_clients');
+    }
+  }
+
+  /** `null` = ilimitado. Bloquea cuando el uso alcanza el tope inclusivo. */
+  private isOverLimit(used: number, limit: number | null): boolean {
+    return limit !== null && used >= limit;
+  }
+
+  private startOfCurrentMonth(): Date {
+    const now = new Date();
+    return new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), 1));
   }
 
   private async getWorkspaceEntitlementByUser(
@@ -910,7 +978,10 @@ export class SubscriptionsService {
     return Number.isNaN(parsed.getTime()) ? null : parsed;
   }
 
-  private planLimitError(feature: SubscriptionFeature, planRequired: PlanType) {
+  private planLimitError(
+    feature: SubscriptionFeature,
+    planRequired: PlanType = this.requiredPlanForFeature(feature),
+  ) {
     return new HttpException(
       {
         code: 'PLAN_LIMIT_REACHED',
@@ -919,5 +990,18 @@ export class SubscriptionsService {
       },
       403,
     );
+  }
+
+  /**
+   * Para features con tope numerico (quotes), `FEATURE_MIN_PLAN` es FREE pero
+   * quien choca el limite ya esta al menos en ese plan, asi que sugerimos el
+   * siguiente plan de pago.
+   */
+  private requiredPlanForFeature(feature: SubscriptionFeature): PlanType {
+    const minPlan = FEATURE_MIN_PLAN[feature];
+    if (minPlan === PlanType.FREE) {
+      return PlanType.PRO;
+    }
+    return minPlan;
   }
 }

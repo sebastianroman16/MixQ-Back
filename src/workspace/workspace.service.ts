@@ -628,6 +628,9 @@ export class WorkspaceService {
 
   async getAdvancedMetrics(user: AuthUser, range: MetricsRange = 'month') {
     this.assertManagerRole(user.role);
+    await this.subscriptionsService.assertCanUseAdvancedMetrics(
+      user.workspaceId,
+    );
     const profilingEnabled = process.env.PROFILE_WORKSPACE_METRICS === '1';
     const startedAt = Date.now();
 

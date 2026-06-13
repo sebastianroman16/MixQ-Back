@@ -16,7 +16,10 @@ async function bootstrap() {
     app.set('trust proxy', 1);
   }
   app.use(compression());
-  const bodyLimit = process.env.REQUEST_BODY_LIMIT ?? '1mb';
+  // El logo se envia como data URL base64 dentro del JSON (hasta 2MB decodificados
+  // segun el validador de sender-profile), lo que inflado a base64 + overhead del
+  // JSON supera 1mb. 5mb deja margen comodo.
+  const bodyLimit = process.env.REQUEST_BODY_LIMIT ?? '5mb';
   app.use(json({ limit: bodyLimit }));
   app.use(urlencoded({ extended: true, limit: bodyLimit }));
   app.use((_req: Request, res: Response, next: NextFunction) => {
@@ -40,7 +43,7 @@ async function bootstrap() {
     app.enableCors({
       origin: origins,
       credentials: true,
-      methods: ['GET', 'POST', 'PATCH', 'DELETE', 'OPTIONS'],
+      methods: ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       allowedHeaders: ['Content-Type', 'Authorization'],
       optionsSuccessStatus: 204,
     });
