@@ -469,6 +469,12 @@ model Quote {
   @@unique([workspaceId, quoteNumber])
   @@index([userId])
   @@index([workspaceId])
+  @@index([workspaceId, createdAt])
+  @@index([workspaceId, issuedAt])
+  @@index([workspaceId, status])
+  @@index([workspaceId, folderId])
+  @@index([workspaceId, userId])
+  @@index([workspaceId, paymentStatus])
   @@index([folderId])
   @@index([templateId])
 }

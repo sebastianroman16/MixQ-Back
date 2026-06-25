@@ -5,9 +5,19 @@ import { isAllowedRemoteAssetUrl } from '../../common/security/remote-asset-url'
 @Injectable()
 export class PdfRendererService implements OnModuleDestroy {
   private readonly logger = new Logger(PdfRendererService.name);
+  private readonly maxConcurrentRenders = Math.max(
+    1,
+    Number(process.env.PDF_RENDER_CONCURRENCY ?? 2),
+  );
   private browserPromise: Promise<Browser> | null = null;
+  private activeRenders = 0;
+  private readonly renderQueue: Array<() => void> = [];
 
   async renderPdf(html: string): Promise<Uint8Array> {
+    return this.withRenderSlot(() => this.renderPdfPage(html));
+  }
+
+  private async renderPdfPage(html: string): Promise<Uint8Array> {
     const browser = await this.getBrowser();
     const page = await browser.newPage();
 
@@ -39,6 +49,20 @@ export class PdfRendererService implements OnModuleDestroy {
       });
     } finally {
       await page.close().catch(() => undefined);
+    }
+  }
+
+  private async withRenderSlot<T>(task: () => Promise<T>): Promise<T> {
+    if (this.activeRenders >= this.maxConcurrentRenders) {
+      await new Promise<void>((resolve) => this.renderQueue.push(resolve));
+    }
+
+    this.activeRenders += 1;
+    try {
+      return await task();
+    } finally {
+      this.activeRenders = Math.max(0, this.activeRenders - 1);
+      this.renderQueue.shift()?.();
     }
   }
 

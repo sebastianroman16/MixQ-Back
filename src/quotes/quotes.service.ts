@@ -99,9 +99,17 @@ type QuoteFolderDelegate = {
   delete(args: { where: { id: string } }): Promise<QuoteFolderRecord>;
 };
 
+type PdfCacheEntry = {
+  expiresAt: number;
+  value: Uint8Array;
+};
+
 @Injectable()
 export class QuotesService {
   private readonly logger = new Logger(QuotesService.name);
+  private readonly pdfCache = new Map<string, PdfCacheEntry>();
+  private readonly pdfCacheTtlMs = Number(process.env.QUOTE_PDF_CACHE_TTL_MS ?? 5 * 60_000);
+  private readonly pdfCacheMaxEntries = Number(process.env.QUOTE_PDF_CACHE_MAX_ENTRIES ?? 50);
 
   constructor(
     private readonly prisma: PrismaService,
@@ -1109,6 +1117,12 @@ export class QuotesService {
       throw new BadRequestException('Quote missing required data');
     }
 
+    const cacheKey = `${quote.id}:${quote.updatedAt.getTime()}:${watermark ? 'watermark' : 'clean'}`;
+    const cachedPdf = this.getCachedPdf(cacheKey);
+    if (cachedPdf) {
+      return cachedPdf;
+    }
+
     const html = renderQuotePdfHtml({
       ...quote,
       items: quote.items.map((item) => ({
@@ -1120,7 +1134,40 @@ export class QuotesService {
       watermark,
     });
 
-    return this.pdfRenderer.renderPdf(html);
+    const pdf = await this.pdfRenderer.renderPdf(html);
+    this.setCachedPdf(cacheKey, pdf);
+    return pdf;
+  }
+
+  private getCachedPdf(key: string): Uint8Array | null {
+    const entry = this.pdfCache.get(key);
+    if (!entry) {
+      return null;
+    }
+    if (entry.expiresAt <= Date.now()) {
+      this.pdfCache.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  private setCachedPdf(key: string, value: Uint8Array): void {
+    if (this.pdfCacheTtlMs <= 0 || this.pdfCacheMaxEntries <= 0) {
+      return;
+    }
+
+    while (this.pdfCache.size >= this.pdfCacheMaxEntries) {
+      const oldestKey = this.pdfCache.keys().next().value as string | undefined;
+      if (!oldestKey) {
+        break;
+      }
+      this.pdfCache.delete(oldestKey);
+    }
+
+    this.pdfCache.set(key, {
+      expiresAt: Date.now() + this.pdfCacheTtlMs,
+      value,
+    });
   }
 
   private calculateTotals(

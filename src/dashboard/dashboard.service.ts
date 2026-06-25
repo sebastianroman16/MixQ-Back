@@ -25,6 +25,20 @@ type AnalyticsMonthPoint = {
 @Injectable()
 export class DashboardService {
   private readonly logger = new Logger(DashboardService.name);
+  private readonly overviewCache = new Map<
+    string,
+    { expiresAt: number; value: Awaited<ReturnType<DashboardService['buildOverview']>> }
+  >();
+  private readonly analyticsCache = new Map<
+    string,
+    { expiresAt: number; value: Awaited<ReturnType<DashboardService['buildAnalytics']>> }
+  >();
+  private readonly overviewTtlMs = Number(
+    process.env.DASHBOARD_OVERVIEW_CACHE_TTL_MS ?? 15_000,
+  );
+  private readonly analyticsTtlMs = Number(
+    process.env.DASHBOARD_ANALYTICS_CACHE_TTL_MS ?? 45_000,
+  );
 
   constructor(private readonly prisma: PrismaService) {}
 
@@ -142,6 +156,17 @@ export class DashboardService {
   }
 
   async getOverview(workspaceId: string) {
+    const cached = this.getCached(this.overviewCache, workspaceId);
+    if (cached) {
+      return cached;
+    }
+
+    const payload = await this.buildOverview(workspaceId);
+    this.setCached(this.overviewCache, workspaceId, payload, this.overviewTtlMs);
+    return payload;
+  }
+
+  private async buildOverview(workspaceId: string) {
     const [summary, metrics, recent, alerts] = await Promise.all([
       this.getSummary(workspaceId),
       this.getMetrics(workspaceId, 'month'),
@@ -242,6 +267,17 @@ export class DashboardService {
   }
 
   async getAnalytics(workspaceId: string) {
+    const cached = this.getCached(this.analyticsCache, workspaceId);
+    if (cached) {
+      return cached;
+    }
+
+    const payload = await this.buildAnalytics(workspaceId);
+    this.setCached(this.analyticsCache, workspaceId, payload, this.analyticsTtlMs);
+    return payload;
+  }
+
+  private async buildAnalytics(workspaceId: string) {
     const profilingEnabled = process.env.PROFILE_DASHBOARD_ANALYTICS === '1';
     const startedAt = Date.now();
 
@@ -449,6 +485,33 @@ export class DashboardService {
     }
 
     return payload;
+  }
+
+  private getCached<T>(
+    cache: Map<string, { expiresAt: number; value: T }>,
+    key: string,
+  ): T | null {
+    const entry = cache.get(key);
+    if (!entry) {
+      return null;
+    }
+    if (entry.expiresAt <= Date.now()) {
+      cache.delete(key);
+      return null;
+    }
+    return entry.value;
+  }
+
+  private setCached<T>(
+    cache: Map<string, { expiresAt: number; value: T }>,
+    key: string,
+    value: T,
+    ttlMs: number,
+  ): void {
+    if (ttlMs <= 0) {
+      return;
+    }
+    cache.set(key, { expiresAt: Date.now() + ttlMs, value });
   }
 
   private parseClientData(value: Prisma.JsonValue | null): { name?: string } {
