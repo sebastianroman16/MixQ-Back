@@ -67,14 +67,19 @@ export class PdfRendererService implements OnModuleDestroy {
       this.logger.warn('Puppeteer browser disconnected; relaunching');
     }
 
+    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH?.trim() || undefined;
+
     this.browserPromise = puppeteer.launch({
-      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      executablePath,
+      headless: true,
+      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
     });
 
     try {
       return await this.browserPromise;
     } catch (error) {
       this.browserPromise = null;
+      this.logger.error('Failed to launch Puppeteer browser', error);
       throw error;
     }
   }
