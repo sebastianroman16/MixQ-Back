@@ -1,4 +1,12 @@
-import { Injectable, Logger, OnModuleDestroy } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  OnModuleDestroy,
+  ServiceUnavailableException,
+} from '@nestjs/common';
+import { existsSync } from 'fs';
+import { tmpdir } from 'os';
+import { join } from 'path';
 import puppeteer, { Browser } from 'puppeteer';
 import { isAllowedRemoteAssetUrl } from '../../common/security/remote-asset-url';
 
@@ -12,6 +20,9 @@ export class PdfRendererService implements OnModuleDestroy {
   private browserPromise: Promise<Browser> | null = null;
   private activeRenders = 0;
   private readonly renderQueue: Array<() => void> = [];
+  private readonly userDataDir = join(tmpdir(), 'mixq-puppeteer-profile');
+  private readonly cacheDir = join(tmpdir(), 'mixq-puppeteer-cache');
+  private readonly configDir = join(tmpdir(), 'mixq-puppeteer-config');
 
   async renderPdf(html: string): Promise<Uint8Array> {
     return this.withRenderSlot(() => this.renderPdfPage(html));
@@ -39,7 +50,14 @@ export class PdfRendererService implements OnModuleDestroy {
 
         void request.abort();
       });
-      await page.setContent(html, { waitUntil: 'networkidle0' });
+      await page.setContent(html, { waitUntil: 'domcontentloaded' });
+      await page
+        .waitForNetworkIdle({ idleTime: 500, timeout: 5_000 })
+        .catch((error: unknown) => {
+          this.logger.warn(
+            `PDF assets did not finish loading before timeout: ${this.formatError(error)}`,
+          );
+        });
       return await page.pdf({
         format: 'A4',
         printBackground: true,
@@ -91,12 +109,29 @@ export class PdfRendererService implements OnModuleDestroy {
       this.logger.warn('Puppeteer browser disconnected; relaunching');
     }
 
-    const executablePath = process.env.PUPPETEER_EXECUTABLE_PATH?.trim() || undefined;
+    const executablePath = this.resolveExecutablePath();
 
     this.browserPromise = puppeteer.launch({
       executablePath,
       headless: true,
-      args: ['--no-sandbox', '--disable-setuid-sandbox', '--disable-dev-shm-usage'],
+      userDataDir: this.userDataDir,
+      env: {
+        ...process.env,
+        HOME: tmpdir(),
+        XDG_CACHE_HOME: this.cacheDir,
+        XDG_CONFIG_HOME: this.configDir,
+      },
+      args: [
+        '--no-sandbox',
+        '--disable-setuid-sandbox',
+        '--disable-dev-shm-usage',
+        '--disable-gpu',
+        '--disable-crash-reporter',
+        '--disable-extensions',
+        '--disable-background-networking',
+        '--no-first-run',
+        '--no-zygote',
+      ],
     });
 
     try {
@@ -104,7 +139,42 @@ export class PdfRendererService implements OnModuleDestroy {
     } catch (error) {
       this.browserPromise = null;
       this.logger.error('Failed to launch Puppeteer browser', error);
-      throw error;
+      throw new ServiceUnavailableException(
+        'PDF renderer is unavailable. Check Chromium installation in production.',
+      );
     }
+  }
+
+  private resolveExecutablePath(): string | undefined {
+    const configuredPath = process.env.PUPPETEER_EXECUTABLE_PATH?.trim();
+    if (configuredPath) {
+      if (existsSync(configuredPath)) {
+        return configuredPath;
+      }
+
+      this.logger.warn(
+        `Configured PUPPETEER_EXECUTABLE_PATH does not exist: ${configuredPath}`,
+      );
+    }
+
+    const candidates = [
+      '/usr/bin/chromium',
+      '/usr/bin/chromium-browser',
+      '/usr/bin/google-chrome-stable',
+      '/usr/bin/google-chrome',
+    ];
+    const candidate = candidates.find((path) => existsSync(path));
+    if (candidate) {
+      return candidate;
+    }
+
+    return undefined;
+  }
+
+  private formatError(error: unknown): string {
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return String(error);
   }
 }
