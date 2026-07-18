@@ -32,4 +32,42 @@ describe('resolvePgSsl', () => {
   it('uses strict verification for remote connections without a mode', () => {
     expect(resolvePgSsl(remoteUrl)).toEqual({ rejectUnauthorized: true });
   });
+
+  it('disables TLS for the Railway private network in auto mode', () => {
+    expect(
+      resolvePgSsl(
+        'postgresql://user:password@postgres.railway.internal:5432/app',
+        'auto',
+      ),
+    ).toBeUndefined();
+    expect(
+      resolvePgSsl(
+        'postgresql://user:password@postgres.railway.internal:5432/app?sslmode=require',
+        'auto',
+      ),
+    ).toBeUndefined();
+    expect(
+      resolvePgSsl(
+        'postgresql://user:password@postgres.railway.internal:5432/app?sslmode=require',
+      ),
+    ).toBeUndefined();
+  });
+
+  it('uses encrypted TLS for the Railway public proxy in auto mode', () => {
+    expect(
+      resolvePgSsl(
+        'postgresql://user:password@example.proxy.rlwy.net:12345/app',
+        'auto',
+      ),
+    ).toEqual({ rejectUnauthorized: false });
+  });
+
+  it('honors an explicit sslmode from the URL while in auto mode', () => {
+    expect(
+      resolvePgSsl(`${remoteUrl}?sslmode=disable`, 'auto'),
+    ).toBeUndefined();
+    expect(resolvePgSsl(`${remoteUrl}?sslmode=verify-full`, 'auto')).toEqual({
+      rejectUnauthorized: true,
+    });
+  });
 });

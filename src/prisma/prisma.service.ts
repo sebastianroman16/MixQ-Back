@@ -94,11 +94,24 @@ export function resolvePgSsl(
     return undefined;
   }
 
-  const mode = (
-    configuredMode?.trim() ||
-    getSslModeFromUrl(connectionString) ||
-    ''
-  ).toLowerCase();
+  const configured = configuredMode?.trim().toLowerCase();
+  const urlMode = getSslModeFromUrl(connectionString)?.toLowerCase();
+  const explicitlyConfigured = configured && configured !== 'auto';
+  const hostname = getDatabaseHostname(connectionString);
+
+  // En modo automatico, la topologia conocida tiene prioridad sobre un
+  // sslmode heredado en la URL. Railway resuelve referencias entre servicios
+  // a su red privada, que no requiere ni expone TLS.
+  if (
+    !explicitlyConfigured &&
+    (hostname === 'localhost' ||
+      hostname === '127.0.0.1' ||
+      hostname?.endsWith('.railway.internal'))
+  ) {
+    return undefined;
+  }
+
+  const mode = explicitlyConfigured ? configured : urlMode;
 
   if (mode === 'disable') {
     return undefined;
@@ -115,8 +128,18 @@ export function resolvePgSsl(
     };
   }
 
-  if (/localhost|127\.0\.0\.1/i.test(connectionString)) {
+  if (
+    hostname === 'localhost' ||
+    hostname === '127.0.0.1' ||
+    hostname?.endsWith('.railway.internal')
+  ) {
     return undefined;
+  }
+
+  // El proxy publico de Railway cifra con una cadena que Node no puede
+  // verificar usando el almacen de CA del sistema. Equivale a sslmode=require.
+  if (hostname?.endsWith('.proxy.rlwy.net')) {
+    return { rejectUnauthorized: false };
   }
 
   // Las conexiones remotas sin modo explicito mantienen validacion estricta.
@@ -129,6 +152,14 @@ export function resolvePgSsl(
 function getSslModeFromUrl(connectionString: string) {
   try {
     return new URL(connectionString).searchParams.get('sslmode');
+  } catch {
+    return null;
+  }
+}
+
+function getDatabaseHostname(connectionString: string) {
+  try {
+    return new URL(connectionString).hostname.toLowerCase();
   } catch {
     return null;
   }

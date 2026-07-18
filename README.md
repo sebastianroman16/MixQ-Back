@@ -63,9 +63,10 @@ MIXQ_BUSINESS_MONTHLY_PRICE_CLP="39990"
 BILLING_CRON_SECRET="usa-un-secreto-largo"
 ```
 
-`PG_SSL_MODE` admite `disable`, `require`, `verify-ca` y `verify-full`.
-El proxy publico de Railway usa `require`; para validacion estricta configura
-`verify-full` junto con `PG_SSL_CA`.
+`PG_SSL_MODE` admite `auto`, `disable`, `require`, `verify-ca` y `verify-full`.
+Railway usa `auto`: desactiva TLS para su red privada y usa TLS para el proxy
+publico. Para otros proveedores se conserva validacion estricta; tambien puede
+configurarse `verify-full` junto con `PG_SSL_CA`.
 
 Notas de invitaciones por email:
 

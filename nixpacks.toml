@@ -31,4 +31,4 @@ aptPkgs = [
 [variables]
 PUPPETEER_EXECUTABLE_PATH = "/usr/bin/chromium"
 PUPPETEER_SKIP_DOWNLOAD = "true"
-PG_SSL_MODE = "require"
+PG_SSL_MODE = "auto"

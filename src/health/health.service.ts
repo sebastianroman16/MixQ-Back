@@ -1,9 +1,15 @@
-import { Injectable, ServiceUnavailableException } from '@nestjs/common';
+import {
+  Injectable,
+  Logger,
+  ServiceUnavailableException,
+} from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { PrismaService } from '../prisma/prisma.service';
 
 @Injectable()
 export class HealthService {
+  private readonly logger = new Logger(HealthService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly config: ConfigService,
@@ -31,7 +37,12 @@ export class HealthService {
 
     try {
       await this.prisma.$queryRaw`SELECT 1`;
-    } catch {
+    } catch (error) {
+      const details =
+        error instanceof Error
+          ? `${error.name}: ${error.message}`
+          : String(error);
+      this.logger.error(`Database readiness check failed: ${details}`);
       throw new ServiceUnavailableException({
         status: 'not_ready',
         checks: {
