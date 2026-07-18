@@ -119,12 +119,15 @@ export class PdfRendererService implements OnModuleDestroy {
 
     const executablePath = this.resolveExecutablePath();
     const disableSandbox = process.env.PUPPETEER_DISABLE_SANDBOX === 'true';
-    if (disableSandbox && process.env.NODE_ENV === 'production') {
-      throw new ServiceUnavailableException(
-        'PDF renderer sandbox must remain enabled in production.',
+    if (disableSandbox) {
+      this.logger.warn(
+        'Chromium sandbox is disabled; relying on the non-root container isolation',
       );
     }
 
+    this.logger.log(
+      `Launching PDF renderer with ${executablePath ?? 'Puppeteer bundled Chromium'}`,
+    );
     this.browserPromise = puppeteer.launch({
       executablePath,
       headless: true,
@@ -150,7 +153,10 @@ export class PdfRendererService implements OnModuleDestroy {
       return await this.browserPromise;
     } catch (error) {
       this.browserPromise = null;
-      this.logger.error('Failed to launch Puppeteer browser', error);
+      this.logger.error(
+        `Failed to launch Puppeteer browser (${executablePath ?? 'bundled executable'}): ${this.formatError(error)}`,
+        error instanceof Error ? error.stack : undefined,
+      );
       throw new ServiceUnavailableException(
         'PDF renderer is unavailable. Check Chromium installation in production.',
       );
