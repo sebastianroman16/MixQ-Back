@@ -1,13 +1,15 @@
 import {
   BadRequestException,
-  ConflictException,
   Injectable,
   NotFoundException,
+  ServiceUnavailableException,
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
 import { User, WorkspaceInvitation, WorkspaceRole } from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
+import { createHash, randomBytes } from 'crypto';
+import { InvitationMailService } from '../mail/invitation-mail.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { ActivateInvitationDto } from './dto/activate-invitation.dto';
 import { ActivateInvitationByCredentialsDto } from './dto/activate-invitation-by-credentials.dto';
@@ -20,6 +22,7 @@ export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly invitationMailService: InvitationMailService,
   ) {}
 
   async register(dto: RegisterDto) {
@@ -35,10 +38,18 @@ export class AuthService {
     });
 
     if (existing) {
-      throw new ConflictException('Email already in use');
+      return this.registrationAcceptedResponse();
     }
 
-    const passwordHash = await bcrypt.hash(dto.password, 10);
+    if (!this.invitationMailService.isConfigured()) {
+      throw new ServiceUnavailableException({
+        code: 'EMAIL_VERIFICATION_UNAVAILABLE',
+      });
+    }
+
+    const passwordHash = await bcrypt.hash(dto.password, this.bcryptRounds());
+    const verificationToken = randomBytes(32).toString('hex');
+    const verificationExpiresAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
 
     const created = await this.prisma.$transaction(async (tx) => {
       const user = await tx.user.create({
@@ -46,6 +57,9 @@ export class AuthService {
           email: normalizedEmail,
           passwordHash,
           name: dto.name,
+          emailVerificationTokenHash:
+            this.hashVerificationToken(verificationToken),
+          emailVerificationExpiresAt: verificationExpiresAt,
         },
       });
 
@@ -73,20 +87,20 @@ export class AuthService {
       return user;
     });
 
-    return {
-      user: {
-        ...this.sanitizeUser(created),
-        workspaceId: created.id,
-        role: WorkspaceRole.OWNER,
-      },
-      accessToken: this.signToken({
-        id: created.id,
-        email: created.email,
-        tokenVersion: created.tokenVersion,
-        workspaceId: created.id,
-        role: WorkspaceRole.OWNER,
-      }),
-    };
+    const delivery =
+      await this.invitationMailService.sendEmailVerificationEmail({
+        to: created.email,
+        name: created.name,
+        token: verificationToken,
+      });
+    if (!delivery.sent) {
+      await this.prisma.user.delete({ where: { id: created.id } });
+      throw new ServiceUnavailableException({
+        code: 'EMAIL_VERIFICATION_UNAVAILABLE',
+      });
+    }
+
+    return this.registrationAcceptedResponse();
   }
 
   async login(dto: LoginDto) {
@@ -113,6 +127,13 @@ export class AuthService {
 
     if (!isValid) {
       throw new UnauthorizedException('Invalid credentials');
+    }
+
+    if (!user.emailVerifiedAt) {
+      throw new UnauthorizedException({
+        code: 'EMAIL_VERIFICATION_REQUIRED',
+        message: 'Verify your email before signing in',
+      });
     }
 
     if (user.mustChangePassword) {
@@ -153,6 +174,45 @@ export class AuthService {
     });
 
     return { success: true };
+  }
+
+  async verifyEmail(token: string) {
+    const user = await this.prisma.user.findFirst({
+      where: {
+        emailVerificationTokenHash: this.hashVerificationToken(token),
+        emailVerificationExpiresAt: { gt: new Date() },
+        emailVerifiedAt: null,
+      },
+    });
+
+    if (!user) {
+      throw new UnauthorizedException('Invalid or expired verification token');
+    }
+
+    const verified = await this.prisma.user.update({
+      where: { id: user.id },
+      data: {
+        emailVerifiedAt: new Date(),
+        emailVerificationTokenHash: null,
+        emailVerificationExpiresAt: null,
+        tokenVersion: { increment: 1 },
+      },
+    });
+
+    return {
+      user: {
+        ...this.sanitizeUser(verified),
+        workspaceId: verified.id,
+        role: WorkspaceRole.OWNER,
+      },
+      accessToken: this.signToken({
+        id: verified.id,
+        email: verified.email,
+        tokenVersion: verified.tokenVersion,
+        workspaceId: verified.id,
+        role: WorkspaceRole.OWNER,
+      }),
+    };
   }
 
   async getInvitationSummary(token: string) {
@@ -232,7 +292,9 @@ export class AuthService {
     );
   }
 
-  async activateInvitationByCredentials(dto: ActivateInvitationByCredentialsDto) {
+  async activateInvitationByCredentials(
+    dto: ActivateInvitationByCredentialsDto,
+  ) {
     const normalizedEmail = dto.email.trim().toLowerCase();
     const invitation = await this.findPendingInvitationByEmail(normalizedEmail);
 
@@ -336,7 +398,10 @@ export class AuthService {
       temporaryPassword,
     );
 
-    const nextPasswordHash = await bcrypt.hash(newPassword, 10);
+    const nextPasswordHash = await bcrypt.hash(
+      newPassword,
+      this.bcryptRounds(),
+    );
 
     await this.prisma.$transaction(async (tx) => {
       await tx.workspaceMember.upsert({
@@ -367,6 +432,7 @@ export class AuthService {
         where: { id: user.id },
         data: {
           passwordHash: nextPasswordHash,
+          emailVerifiedAt: new Date(),
           mustChangePassword: false,
           workspaceId: invitation.workspaceId,
           tokenVersion: {
@@ -542,6 +608,25 @@ export class AuthService {
       workspaceId: payload.workspaceId,
       role: payload.role,
     });
+  }
+
+  private bcryptRounds() {
+    const configured = Number(process.env.BCRYPT_ROUNDS ?? 12);
+    return Number.isInteger(configured) && configured >= 12 && configured <= 15
+      ? configured
+      : 12;
+  }
+
+  private hashVerificationToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private registrationAcceptedResponse() {
+    return {
+      success: true,
+      message:
+        'If the email can be registered, a verification link will be sent.',
+    };
   }
 
   private sanitizeUser(user: User) {

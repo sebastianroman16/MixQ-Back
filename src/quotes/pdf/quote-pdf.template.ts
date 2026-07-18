@@ -233,9 +233,10 @@ export const renderQuotePdfHtml = (quote: QuotePdfData) => {
   const themeHeaderBg = asThemeString(theme, 'headerBg', '#0f172a');
   const themeHeaderText = asThemeString(theme, 'headerText', '#ffffff');
   const themeAccent = asThemeString(theme, 'accent', '#5A6FF0');
-  const backgroundImage = sanitizeAssetUrl(
-    asThemeString(theme, 'backgroundImage', ''),
-  );
+  // Los fondos definidos por plantillas podian contener imagenes grandes y
+  // arbitrarias. Se conservan los colores del tema, pero no se cargan assets
+  // de fondo durante una exportacion de PDF.
+  const backgroundImage = '';
   const backgroundSizeRaw = asThemeNumber(theme, 'backgroundSize', 100);
   const backgroundSize = Math.max(20, Math.min(200, backgroundSizeRaw));
   const overlayRaw = asThemeNumber(theme, 'backgroundOverlay', 0);

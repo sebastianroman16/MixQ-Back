@@ -13,9 +13,14 @@ import { isAllowedRemoteAssetUrl } from '../../common/security/remote-asset-url'
 @Injectable()
 export class PdfRendererService implements OnModuleDestroy {
   private readonly logger = new Logger(PdfRendererService.name);
-  private readonly maxConcurrentRenders = Math.max(
-    1,
-    Number(process.env.PDF_RENDER_CONCURRENCY ?? 2),
+  private readonly maxConcurrentRenders = this.readPositiveInteger(
+    process.env.PDF_RENDER_CONCURRENCY,
+    2,
+  );
+  private readonly maxQueueSize = this.readPositiveInteger(
+    process.env.PDF_RENDER_MAX_QUEUE,
+    20,
+    true,
   );
   private browserPromise: Promise<Browser> | null = null;
   private activeRenders = 0;
@@ -40,8 +45,6 @@ export class PdfRendererService implements OnModuleDestroy {
         const requestUrl = request.url();
         if (
           requestUrl === 'about:blank' ||
-          requestUrl.startsWith('data:') ||
-          requestUrl.startsWith('blob:') ||
           isAllowedRemoteAssetUrl(requestUrl)
         ) {
           void request.continue();
@@ -72,6 +75,11 @@ export class PdfRendererService implements OnModuleDestroy {
 
   private async withRenderSlot<T>(task: () => Promise<T>): Promise<T> {
     if (this.activeRenders >= this.maxConcurrentRenders) {
+      if (this.renderQueue.length >= this.maxQueueSize) {
+        throw new ServiceUnavailableException(
+          'PDF renderer is busy. Please try again shortly.',
+        );
+      }
       await new Promise<void>((resolve) => this.renderQueue.push(resolve));
     }
 
@@ -110,6 +118,12 @@ export class PdfRendererService implements OnModuleDestroy {
     }
 
     const executablePath = this.resolveExecutablePath();
+    const disableSandbox = process.env.PUPPETEER_DISABLE_SANDBOX === 'true';
+    if (disableSandbox && process.env.NODE_ENV === 'production') {
+      throw new ServiceUnavailableException(
+        'PDF renderer sandbox must remain enabled in production.',
+      );
+    }
 
     this.browserPromise = puppeteer.launch({
       executablePath,
@@ -122,15 +136,13 @@ export class PdfRendererService implements OnModuleDestroy {
         XDG_CONFIG_HOME: this.configDir,
       },
       args: [
-        '--no-sandbox',
-        '--disable-setuid-sandbox',
+        ...(disableSandbox ? ['--no-sandbox', '--disable-setuid-sandbox'] : []),
         '--disable-dev-shm-usage',
         '--disable-gpu',
         '--disable-crash-reporter',
         '--disable-extensions',
         '--disable-background-networking',
         '--no-first-run',
-        '--no-zygote',
       ],
     });
 
@@ -176,5 +188,17 @@ export class PdfRendererService implements OnModuleDestroy {
       return error.message;
     }
     return String(error);
+  }
+
+  private readPositiveInteger(
+    value: string | undefined,
+    fallback: number,
+    allowZero = false,
+  ) {
+    const parsed = Number(value);
+    if (Number.isInteger(parsed) && (allowZero ? parsed >= 0 : parsed > 0)) {
+      return parsed;
+    }
+    return fallback;
   }
 }

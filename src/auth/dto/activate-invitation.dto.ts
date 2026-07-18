@@ -14,7 +14,7 @@ export class ActivateInvitationDto {
   temporaryPassword: string;
 
   @IsString()
-  @MinLength(8)
+  @MinLength(12)
   @MaxLength(128)
   newPassword: string;
 }

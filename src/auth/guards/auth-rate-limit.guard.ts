@@ -6,24 +6,24 @@ import {
   Injectable,
 } from '@nestjs/common';
 import { Reflector } from '@nestjs/core';
+import { createHash } from 'crypto';
 import type { Request } from 'express';
+import { PrismaService } from '../../prisma/prisma.service';
 import {
   AUTH_RATE_LIMIT_KEY,
   AuthRateLimitOptions,
 } from '../decorators/auth-rate-limit.decorator';
 
-type RateLimitEntry = {
-  count: number;
-  resetAt: number;
-};
-
 @Injectable()
 export class AuthRateLimitGuard implements CanActivate {
-  private readonly entries = new Map<string, RateLimitEntry>();
+  private lastCleanupAt = 0;
 
-  constructor(private readonly reflector: Reflector) {}
+  constructor(
+    private readonly reflector: Reflector,
+    private readonly prisma: PrismaService,
+  ) {}
 
-  canActivate(context: ExecutionContext): boolean {
+  async canActivate(context: ExecutionContext): Promise<boolean> {
     const options = this.reflector.getAllAndOverride<AuthRateLimitOptions>(
       AUTH_RATE_LIMIT_KEY,
       [context.getHandler(), context.getClass()],
@@ -36,23 +36,11 @@ export class AuthRateLimitGuard implements CanActivate {
     const request = context.switchToHttp().getRequest<Request>();
     const now = Date.now();
     const key = this.buildKey(request, options);
-    const existing = this.entries.get(key);
-
-    if (!existing || existing.resetAt <= now) {
-      this.entries.set(key, {
-        count: 1,
-        resetAt: now + options.windowMs,
-      });
-      this.pruneExpiredEntries(now);
-      this.pruneOverflowEntries();
-      return true;
-    }
-
-    existing.count += 1;
-    if (existing.count > options.limit) {
+    const { count, resetAt } = await this.increment(key, options.windowMs);
+    if (count > options.limit) {
       const retryAfterSeconds = Math.max(
         1,
-        Math.ceil((existing.resetAt - now) / 1000),
+        Math.ceil((resetAt.getTime() - now) / 1000),
       );
       throw new HttpException(
         {
@@ -63,6 +51,7 @@ export class AuthRateLimitGuard implements CanActivate {
       );
     }
 
+    this.cleanupExpiredEntries(now);
     return true;
   }
 
@@ -72,6 +61,7 @@ export class AuthRateLimitGuard implements CanActivate {
       socket?: { remoteAddress?: string };
       headers?: Record<string, string | string[] | undefined>;
       body?: Record<string, unknown>;
+      user?: { id?: string };
     },
     options: AuthRateLimitOptions,
   ) {
@@ -88,43 +78,48 @@ export class AuthRateLimitGuard implements CanActivate {
         request.socket?.remoteAddress ||
         'unknown',
     );
-    const bodyParts =
-      options.bodyFields
-        ?.map((field) => {
-          const value = request.body?.[field];
-          return typeof value === 'string' ? value.trim().toLowerCase() : '';
-        })
-        .filter(Boolean)
-        .join(':') ?? '';
-
-    return `${options.keyPrefix}:${ip}:${bodyParts}`;
+    // Para endpoints anonimos el limite debe depender exclusivamente de la IP.
+    // Incluir email, token u otros campos controlados por el cliente permite
+    // evadirlo cambiando el valor en cada intento y crea filas sin limite.
+    // En recursos autenticados, el usuario es una identidad estable.
+    const subject = options.keyByUser ? (request.user?.id ?? ip) : ip;
+    const rawKey = `${options.keyPrefix}:${subject}`;
+    return createHash('sha256').update(rawKey).digest('hex');
   }
 
-  private pruneExpiredEntries(now: number) {
-    if (this.entries.size < this.maxEntries()) {
+  private async increment(key: string, windowMs: number) {
+    const now = new Date();
+    const nextResetAt = new Date(now.getTime() + windowMs);
+    const [entry] = await this.prisma.$queryRaw<
+      Array<{ count: number; resetAt: Date }>
+    >`
+      INSERT INTO "RateLimitEntry" ("key", "count", "resetAt", "updatedAt")
+      VALUES (${key}, 1, ${nextResetAt}, ${now})
+      ON CONFLICT ("key") DO UPDATE SET
+        "count" = CASE
+          WHEN "RateLimitEntry"."resetAt" <= ${now} THEN 1
+          ELSE "RateLimitEntry"."count" + 1
+        END,
+        "resetAt" = CASE
+          WHEN "RateLimitEntry"."resetAt" <= ${now} THEN ${nextResetAt}
+          ELSE "RateLimitEntry"."resetAt"
+        END,
+        "updatedAt" = ${now}
+      RETURNING "count", "resetAt"
+    `;
+
+    return entry;
+  }
+
+  private cleanupExpiredEntries(now: number) {
+    // El borrado no participa en la decision y no agrega latencia a cada
+    // request. Una replica limpia cada cinco minutos como maximo.
+    if (now - this.lastCleanupAt < 5 * 60_000) {
       return;
     }
-
-    for (const [key, entry] of this.entries.entries()) {
-      if (entry.resetAt <= now) {
-        this.entries.delete(key);
-      }
-    }
-  }
-
-  private pruneOverflowEntries() {
-    const maxEntries = this.maxEntries();
-    while (this.entries.size > maxEntries) {
-      const oldestKey = this.entries.keys().next().value as string | undefined;
-      if (!oldestKey) {
-        return;
-      }
-      this.entries.delete(oldestKey);
-    }
-  }
-
-  private maxEntries() {
-    const configured = Number(process.env.AUTH_RATE_LIMIT_MAX_ENTRIES);
-    return Number.isFinite(configured) && configured > 0 ? configured : 10_000;
+    this.lastCleanupAt = now;
+    void this.prisma.rateLimitEntry
+      .deleteMany({ where: { resetAt: { lt: new Date(now) } } })
+      .catch(() => undefined);
   }
 }

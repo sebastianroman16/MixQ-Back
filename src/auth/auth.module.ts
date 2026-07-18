@@ -1,6 +1,7 @@
 import { Module } from '@nestjs/common';
 import { ConfigService } from '@nestjs/config';
 import { JwtModule } from '@nestjs/jwt';
+import { MailModule } from '../mail/mail.module';
 import { AuthService } from './auth.service';
 import { AuthController } from './auth.controller';
 import { AuthRateLimitGuard } from './guards/auth-rate-limit.guard';
@@ -9,6 +10,7 @@ import { WorkspaceRoleGuard } from './guards/workspace-role.guard';
 
 @Module({
   imports: [
+    MailModule,
     JwtModule.registerAsync({
       inject: [ConfigService],
       useFactory: (configService: ConfigService) => {
@@ -36,18 +38,15 @@ export class AuthModule {}
 
 function getJwtSecret(configService: ConfigService): string {
   const secret = configService.get<string>('JWT_SECRET')?.trim();
-  const isProduction = configService.get<string>('NODE_ENV') === 'production';
+  const isTest = configService.get<string>('NODE_ENV') === 'test';
 
-  if (
-    isProduction &&
-    (!secret || secret === 'dev-secret' || secret.length < 32)
-  ) {
+  if (!isTest && (!secret || secret === 'dev-secret' || secret.length < 32)) {
     throw new Error(
-      'JWT_SECRET must be set to a strong value with at least 32 characters in production',
+      'JWT_SECRET must be set to a strong value with at least 32 characters',
     );
   }
 
-  return secret || 'dev-secret';
+  return secret || 'test-only-jwt-secret-not-for-runtime';
 }
 
 function parseExpiresIn(value: string): number {

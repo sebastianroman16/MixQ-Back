@@ -22,7 +22,7 @@ export class InvitationMailService {
     this.mailTimeoutMs = this.getPositiveNumber('MAIL_TIMEOUT_MS', 10_000);
 
     this.logger.log(
-      `Mail config loaded | apiKey=${this.maskApiKey(this.resendApiKey)} | from=${this.resendFrom} | frontend=${this.frontendBaseUrl}`,
+      `Mail config loaded | apiKey=${this.resendApiKey ? 'configured' : 'missing'} | from=${this.resendFrom} | frontend=${this.frontendBaseUrl}`,
     );
   }
 
@@ -31,16 +31,44 @@ export class InvitationMailService {
     return `${base}/invitacion/${token}`;
   }
 
-  private maskApiKey(value: string): string {
-    if (!value) {
-      return 'missing';
+  isConfigured() {
+    return Boolean(this.resendApiKey);
+  }
+
+  async sendEmailVerificationEmail(input: {
+    to: string;
+    name?: string | null;
+    token: string;
+  }) {
+    if (!this.resendApiKey) {
+      return { sent: false };
     }
 
-    if (value.length <= 8) {
-      return `${value.slice(0, 2)}***`;
+    const base = this.frontendBaseUrl.replace(/\/+$/, '');
+    const verificationUrl = `${base}/verificar-correo?token=${encodeURIComponent(input.token)}`;
+    const name = this.escapeHtml(input.name?.trim() || '');
+    const safeUrl = this.escapeHtml(verificationUrl);
+    const response = await fetch('https://api.resend.com/emails', {
+      method: 'POST',
+      signal: AbortSignal.timeout(this.mailTimeoutMs),
+      headers: {
+        Authorization: `Bearer ${this.resendApiKey}`,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({
+        from: this.resendFrom,
+        to: [input.to],
+        subject: 'Verifica tu correo en MixQ',
+        html: `<p>Hola ${name}, confirma tu correo para activar tu cuenta.</p><p><a href="${safeUrl}">Verificar correo</a></p><p>Este enlace expira en 24 horas.</p>`,
+      }),
+    });
+
+    if (!response.ok) {
+      this.logger.error(`Verification email failed (${response.status})`);
+      return { sent: false };
     }
 
-    return `${value.slice(0, 4)}...${value.slice(-4)}`;
+    return { sent: true };
   }
 
   private buildMessageFromStatus(status: number): string {
@@ -113,7 +141,7 @@ export class InvitationMailService {
     `;
 
     this.logger.log(
-      `Sending workspace invitation email to ${input.to} using from=${this.resendFrom} and apiKey=${this.maskApiKey(this.resendApiKey)}`,
+      `Sending workspace invitation email to ${input.to} using from=${this.resendFrom}`,
     );
 
     try {

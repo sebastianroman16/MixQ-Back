@@ -83,6 +83,9 @@ model User {
   id                  String             @id @default(uuid())
   email               String             @unique
   passwordHash        String
+  emailVerifiedAt     DateTime?
+  emailVerificationTokenHash String?
+  emailVerificationExpiresAt DateTime?
   name                String?
   mustChangePassword  Boolean            @default(false)
   tokenVersion        Int                @default(0)
@@ -111,6 +114,7 @@ model User {
   sellerGoals         SellerGoal[]
 
   @@index([workspaceId])
+  @@index([emailVerificationTokenHash])
 }
 
 model Workspace {
@@ -227,6 +231,18 @@ model BillingEvent {
 
   @@index([workspaceId])
   @@index([status, createdAt])
+}
+
+// Compartido entre replicas para que los limites no puedan evitarse alternando
+// procesos de la API. La clave se guarda hasheada; nunca contiene emails,
+// tokens ni direcciones IP en texto plano.
+model RateLimitEntry {
+  key       String   @id
+  count     Int
+  resetAt   DateTime
+  updatedAt DateTime @updatedAt
+
+  @@index([resetAt])
 }
 
 model WorkspaceMember {

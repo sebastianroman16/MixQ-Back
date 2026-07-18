@@ -59,7 +59,6 @@ export class SubscriptionsController {
     keyPrefix: 'billing:flow:register-return',
     limit: 20,
     windowMs: 15 * 60 * 1000,
-    bodyFields: ['token'],
   })
   flowRegisterReturn(
     @Query('sessionId') sessionId: string,
@@ -77,7 +76,6 @@ export class SubscriptionsController {
     keyPrefix: 'billing:flow:invoice-callback',
     limit: 60,
     windowMs: 15 * 60 * 1000,
-    bodyFields: ['token', 'invoiceId'],
   })
   flowInvoiceCallback(
     @Body() body: Record<string, unknown>,

@@ -35,7 +35,10 @@ export class PrismaService
       ),
       ssl: shouldUseSsl(connectionString)
         ? {
-            rejectUnauthorized: false,
+            // La CA del proveedor debe estar disponible en el contenedor. No
+            // aceptar certificados no verificables evita ataques MITM contra
+            // datos y credenciales de la base de datos.
+            rejectUnauthorized: true,
           }
         : undefined,
     });

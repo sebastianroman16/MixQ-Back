@@ -5,7 +5,12 @@ import {
   Logger,
   NotFoundException,
 } from '@nestjs/common';
-import { PaymentStatus, Prisma, QuoteStatus, WorkspaceRole } from '@prisma/client';
+import {
+  PaymentStatus,
+  Prisma,
+  QuoteStatus,
+  WorkspaceRole,
+} from '@prisma/client';
 import * as bcrypt from 'bcryptjs';
 import { randomBytes, randomUUID } from 'crypto';
 import { AuthUser } from '../auth/types/auth-user';
@@ -146,7 +151,10 @@ export class WorkspaceService {
     }
 
     const temporaryPassword = this.generateTemporaryPassword();
-    const temporaryPasswordHash = await bcrypt.hash(temporaryPassword, 10);
+    const temporaryPasswordHash = await bcrypt.hash(
+      temporaryPassword,
+      this.bcryptRounds(),
+    );
 
     const { invitation } = await this.prisma.$transaction(async (tx) => {
       const existingUser = await tx.user.findFirst({
@@ -271,7 +279,10 @@ export class WorkspaceService {
     }
 
     const temporaryPassword = this.generateTemporaryPassword();
-    const temporaryPasswordHash = await bcrypt.hash(temporaryPassword, 10);
+    const temporaryPasswordHash = await bcrypt.hash(
+      temporaryPassword,
+      this.bcryptRounds(),
+    );
     const expiresAt = new Date();
     expiresAt.setDate(expiresAt.getDate() + 7);
 
@@ -304,15 +315,17 @@ export class WorkspaceService {
     // Reenvio: ademas de regenerar el acceso, intentamos enviar el correo.
     // Si Resend no esta configurado, el metodo devuelve SKIPPED y el owner
     // sigue pudiendo compartir el enlace/clave manualmente (se devuelven igual).
-    const email = await this.invitationMailService.sendWorkspaceInvitationEmail({
-      to: invitation.email,
-      invitedUserName: invitedUser.name ?? invitation.email,
-      workspaceName: workspace?.name ?? 'tu equipo',
-      invitedByName: null,
-      roleLabel: WORKSPACE_ROLE_LABELS[invitation.role],
-      token: updated.token,
-      temporaryPassword,
-    });
+    const email = await this.invitationMailService.sendWorkspaceInvitationEmail(
+      {
+        to: invitation.email,
+        invitedUserName: invitedUser.name ?? invitation.email,
+        workspaceName: workspace?.name ?? 'tu equipo',
+        invitedByName: null,
+        roleLabel: WORKSPACE_ROLE_LABELS[invitation.role],
+        token: updated.token,
+        temporaryPassword,
+      },
+    );
 
     return {
       ...updated,
@@ -456,6 +469,13 @@ export class WorkspaceService {
     return `Qm!${randomBytes(6).toString('base64url')}`;
   }
 
+  private bcryptRounds() {
+    const configured = Number(process.env.BCRYPT_ROUNDS ?? 12);
+    return Number.isInteger(configured) && configured >= 12 && configured <= 15
+      ? configured
+      : 12;
+  }
+
   private buildInvitationUrl(token: string) {
     const frontendBaseUrl =
       process.env.FRONTEND_URL?.replace(/\/+$/, '') ?? 'http://localhost:4200';
@@ -552,7 +572,10 @@ export class WorkspaceService {
     const nextRole = dto.role ?? member.role;
     const nextName = dto.name?.trim();
 
-    if (member.role === WorkspaceRole.OWNER && nextRole !== WorkspaceRole.OWNER) {
+    if (
+      member.role === WorkspaceRole.OWNER &&
+      nextRole !== WorkspaceRole.OWNER
+    ) {
       await this.assertMoreThanOneOwner(user.workspaceId, member.id);
     }
 
@@ -930,15 +953,13 @@ export class WorkspaceService {
     >();
 
     for (const goal of goals) {
-      const entry =
-        goalsByUserId.get(goal.userId) ??
-        {
-          quotesCreatedTarget: 0,
-          acceptedQuotesTarget: 0,
-          paidRevenueTarget: 0,
-          acceptanceRateTarget: 0,
-          acceptanceRateEntries: 0,
-        };
+      const entry = goalsByUserId.get(goal.userId) ?? {
+        quotesCreatedTarget: 0,
+        acceptedQuotesTarget: 0,
+        paidRevenueTarget: 0,
+        acceptanceRateTarget: 0,
+        acceptanceRateEntries: 0,
+      };
       entry.quotesCreatedTarget += goal.quotesCreatedTarget;
       entry.acceptedQuotesTarget += goal.acceptedQuotesTarget;
       entry.paidRevenueTarget += new Prisma.Decimal(
@@ -956,8 +977,7 @@ export class WorkspaceService {
     const currentGoalByUserId = new Map(
       goals
         .filter(
-          (goal) =>
-            goal.periodStart.getTime() === currentGoalPeriod.getTime(),
+          (goal) => goal.periodStart.getTime() === currentGoalPeriod.getTime(),
         )
         .map((goal) => [goal.userId, goal]),
     );
@@ -1175,8 +1195,7 @@ export class WorkspaceService {
             paidRevenueTarget: rawGoals?.paidRevenueTarget ?? 0,
             acceptanceRateTarget:
               rawGoals && rawGoals.acceptanceRateEntries > 0
-                ? rawGoals.acceptanceRateTarget /
-                  rawGoals.acceptanceRateEntries
+                ? rawGoals.acceptanceRateTarget / rawGoals.acceptanceRateEntries
                 : 0,
           };
 

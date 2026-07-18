@@ -5,6 +5,7 @@ import { VerifyInvitationCredentialsDto } from './dto/verify-invitation-credenti
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { VerifyEmailDto } from './dto/verify-email.dto';
 import { AuthRateLimit } from './decorators/auth-rate-limit.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
 import { AuthRateLimitGuard } from './guards/auth-rate-limit.guard';
@@ -21,10 +22,20 @@ export class AuthController {
     keyPrefix: 'auth:register',
     limit: 5,
     windowMs: 15 * 60 * 1000,
-    bodyFields: ['email'],
   })
   register(@Body() dto: RegisterDto) {
     return this.authService.register(dto);
+  }
+
+  @Post('verify-email')
+  @UseGuards(AuthRateLimitGuard)
+  @AuthRateLimit({
+    keyPrefix: 'auth:verify-email',
+    limit: 10,
+    windowMs: 15 * 60 * 1000,
+  })
+  verifyEmail(@Body() dto: VerifyEmailDto) {
+    return this.authService.verifyEmail(dto.token);
   }
 
   @Post('login')
@@ -33,7 +44,6 @@ export class AuthController {
     keyPrefix: 'auth:login',
     limit: 8,
     windowMs: 15 * 60 * 1000,
-    bodyFields: ['email'],
   })
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
@@ -45,7 +55,6 @@ export class AuthController {
     keyPrefix: 'auth:invitation:activate',
     limit: 6,
     windowMs: 15 * 60 * 1000,
-    bodyFields: ['email', 'token'],
   })
   activateInvitation(@Body() dto: ActivateInvitationDto) {
     return this.authService.activateInvitation(dto);
@@ -57,7 +66,6 @@ export class AuthController {
     keyPrefix: 'auth:invitation:verify-credentials',
     limit: 10,
     windowMs: 15 * 60 * 1000,
-    bodyFields: ['email'],
   })
   verifyInvitationCredentials(@Body() dto: VerifyInvitationCredentialsDto) {
     return this.authService.verifyInvitationCredentials(dto);
@@ -69,9 +77,10 @@ export class AuthController {
     keyPrefix: 'auth:invitation:activate-credentials',
     limit: 6,
     windowMs: 15 * 60 * 1000,
-    bodyFields: ['email'],
   })
-  activateInvitationByCredentials(@Body() dto: ActivateInvitationByCredentialsDto) {
+  activateInvitationByCredentials(
+    @Body() dto: ActivateInvitationByCredentialsDto,
+  ) {
     return this.authService.activateInvitationByCredentials(dto);
   }
 

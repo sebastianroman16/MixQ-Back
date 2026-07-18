@@ -15,7 +15,9 @@ import {
 import { WorkspaceRole } from '@prisma/client';
 import type { Response } from 'express';
 import { CurrentUser } from '../auth/decorators/current-user.decorator';
+import { AuthRateLimit } from '../auth/decorators/auth-rate-limit.decorator';
 import { RequireWorkspaceRoles } from '../auth/decorators/require-workspace-roles.decorator';
+import { AuthRateLimitGuard } from '../auth/guards/auth-rate-limit.guard';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard';
 import { WorkspaceRoleGuard } from '../auth/guards/workspace-role.guard';
 import type { AuthUser } from '../auth/types/auth-user';
@@ -92,7 +94,11 @@ export class QuotesController {
 
   @Get('composer-bootstrap')
   composerBootstrap(@CurrentUser() user: AuthUser) {
-    return this.quotesService.getComposerBootstrap(user.id, user.role, user.workspaceId);
+    return this.quotesService.getComposerBootstrap(
+      user.id,
+      user.role,
+      user.workspaceId,
+    );
   }
 
   @Get('favorites')
@@ -124,6 +130,13 @@ export class QuotesController {
   }
 
   @Get(':id/pdf')
+  @UseGuards(AuthRateLimitGuard)
+  @AuthRateLimit({
+    keyPrefix: 'quotes:pdf-export',
+    limit: 10,
+    windowMs: 60 * 1000,
+    keyByUser: true,
+  })
   async exportPdf(
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
@@ -154,7 +167,13 @@ export class QuotesController {
     @Param('id', ParseUUIDPipe) id: string,
     @Body() dto: UpdateQuoteDto,
   ) {
-    return this.quotesService.update(user.id, user.role, user.workspaceId, id, dto);
+    return this.quotesService.update(
+      user.id,
+      user.role,
+      user.workspaceId,
+      id,
+      dto,
+    );
   }
 
   @Post(':id/status')
@@ -178,7 +197,13 @@ export class QuotesController {
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.quotesService.setFavorite(user.id, user.role, user.workspaceId, id, true);
+    return this.quotesService.setFavorite(
+      user.id,
+      user.role,
+      user.workspaceId,
+      id,
+      true,
+    );
   }
 
   @Delete(':id/favorite')
@@ -186,7 +211,13 @@ export class QuotesController {
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.quotesService.setFavorite(user.id, user.role, user.workspaceId, id, false);
+    return this.quotesService.setFavorite(
+      user.id,
+      user.role,
+      user.workspaceId,
+      id,
+      false,
+    );
   }
 
   @Patch(':id/folder')
@@ -221,7 +252,12 @@ export class QuotesController {
     @CurrentUser() user: AuthUser,
     @Param('id', ParseUUIDPipe) id: string,
   ) {
-    return this.quotesService.duplicate(user.id, user.role, user.workspaceId, id);
+    return this.quotesService.duplicate(
+      user.id,
+      user.role,
+      user.workspaceId,
+      id,
+    );
   }
 
   @Delete(':id')

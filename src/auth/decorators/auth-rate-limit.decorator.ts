@@ -4,7 +4,8 @@ export type AuthRateLimitOptions = {
   limit: number;
   windowMs: number;
   keyPrefix: string;
-  bodyFields?: string[];
+  /** Incluye el usuario autenticado cuando el endpoint ya tiene JwtAuthGuard. */
+  keyByUser?: boolean;
 };
 
 export const AUTH_RATE_LIMIT_KEY = 'auth_rate_limit';
