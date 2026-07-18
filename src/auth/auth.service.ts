@@ -145,6 +145,13 @@ export class AuthService {
     }
 
     const session = await this.ensureWorkspaceForUser(user.id);
+    const tokens = await this.issueSessionTokens({
+      id: user.id,
+      email: user.email,
+      tokenVersion: user.tokenVersion,
+      workspaceId: session.workspaceId,
+      role: session.role,
+    });
 
     return {
       user: {
@@ -152,28 +159,91 @@ export class AuthService {
         workspaceId: session.workspaceId,
         role: session.role,
       },
-      accessToken: this.signToken({
-        id: user.id,
-        email: user.email,
-        tokenVersion: user.tokenVersion,
-        workspaceId: session.workspaceId,
-        role: session.role,
-      }),
+      ...tokens,
     };
   }
 
   async logout(userId: string) {
-    await this.prisma.user.update({
-      where: { id: userId },
-      data: {
-        tokenVersion: {
-          increment: 1,
+    await this.prisma.$transaction([
+      this.prisma.user.update({
+        where: { id: userId },
+        data: {
+          tokenVersion: {
+            increment: 1,
+          },
         },
-      },
-      select: { id: true },
-    });
+        select: { id: true },
+      }),
+      this.prisma.authSession.deleteMany({ where: { userId } }),
+    ]);
 
     return { success: true };
+  }
+
+  async refresh(refreshToken: string) {
+    const now = new Date();
+    const existing = await this.prisma.authSession.findUnique({
+      where: { tokenHash: this.hashRefreshToken(refreshToken) },
+      include: {
+        user: {
+          select: {
+            id: true,
+            email: true,
+            tokenVersion: true,
+            emailVerifiedAt: true,
+            mustChangePassword: true,
+          },
+        },
+      },
+    });
+
+    if (
+      !existing ||
+      existing.revokedAt ||
+      existing.expiresAt <= now ||
+      !existing.user.emailVerifiedAt ||
+      existing.user.mustChangePassword
+    ) {
+      throw new UnauthorizedException('Invalid refresh token');
+    }
+
+    const workspace = await this.ensureWorkspaceForUser(existing.user.id);
+    const nextRefreshToken = this.generateRefreshToken();
+    const nextExpiresAt = this.refreshTokenExpiresAt();
+
+    await this.prisma.$transaction(async (tx) => {
+      const rotated = await tx.authSession.updateMany({
+        where: {
+          id: existing.id,
+          revokedAt: null,
+          expiresAt: { gt: now },
+        },
+        data: { revokedAt: now },
+      });
+      if (rotated.count !== 1) {
+        throw new UnauthorizedException('Invalid refresh token');
+      }
+
+      await tx.authSession.create({
+        data: {
+          userId: existing.user.id,
+          tokenHash: this.hashRefreshToken(nextRefreshToken),
+          expiresAt: nextExpiresAt,
+        },
+      });
+    });
+
+    return {
+      accessToken: this.signToken({
+        id: existing.user.id,
+        email: existing.user.email,
+        tokenVersion: existing.user.tokenVersion,
+        workspaceId: workspace.workspaceId,
+        role: workspace.role,
+      }),
+      refreshToken: nextRefreshToken,
+      refreshTokenExpiresAt: nextExpiresAt,
+    };
   }
 
   async verifyEmail(token: string) {
@@ -198,6 +268,13 @@ export class AuthService {
         tokenVersion: { increment: 1 },
       },
     });
+    const tokens = await this.issueSessionTokens({
+      id: verified.id,
+      email: verified.email,
+      tokenVersion: verified.tokenVersion,
+      workspaceId: verified.id,
+      role: WorkspaceRole.OWNER,
+    });
 
     return {
       user: {
@@ -205,13 +282,7 @@ export class AuthService {
         workspaceId: verified.id,
         role: WorkspaceRole.OWNER,
       },
-      accessToken: this.signToken({
-        id: verified.id,
-        email: verified.email,
-        tokenVersion: verified.tokenVersion,
-        workspaceId: verified.id,
-        role: WorkspaceRole.OWNER,
-      }),
+      ...tokens,
     };
   }
 
@@ -441,6 +512,13 @@ export class AuthService {
         },
       });
     });
+    const tokens = await this.issueSessionTokens({
+      id: user.id,
+      email: user.email,
+      tokenVersion: user.tokenVersion + 1,
+      workspaceId: invitation.workspace.id,
+      role: invitation.role,
+    });
 
     return {
       user: {
@@ -448,13 +526,7 @@ export class AuthService {
         workspaceId: invitation.workspace.id,
         role: invitation.role,
       },
-      accessToken: this.signToken({
-        id: user.id,
-        email: user.email,
-        tokenVersion: user.tokenVersion + 1,
-        workspaceId: invitation.workspace.id,
-        role: invitation.role,
-      }),
+      ...tokens,
       workspaceName: invitation.workspace.name,
     };
   }
@@ -608,6 +680,57 @@ export class AuthService {
       workspaceId: payload.workspaceId,
       role: payload.role,
     });
+  }
+
+  private async issueSessionTokens(payload: {
+    id: string;
+    email: string;
+    tokenVersion: number;
+    workspaceId: string;
+    role: WorkspaceRole;
+  }) {
+    const refreshToken = this.generateRefreshToken();
+    const refreshTokenExpiresAt = this.refreshTokenExpiresAt();
+    const now = new Date();
+
+    await this.prisma.$transaction([
+      this.prisma.authSession.deleteMany({
+        where: {
+          userId: payload.id,
+          OR: [{ expiresAt: { lte: now } }, { revokedAt: { not: null } }],
+        },
+      }),
+      this.prisma.authSession.create({
+        data: {
+          userId: payload.id,
+          tokenHash: this.hashRefreshToken(refreshToken),
+          expiresAt: refreshTokenExpiresAt,
+        },
+      }),
+    ]);
+
+    return {
+      accessToken: this.signToken(payload),
+      refreshToken,
+      refreshTokenExpiresAt,
+    };
+  }
+
+  private generateRefreshToken() {
+    return randomBytes(48).toString('base64url');
+  }
+
+  private hashRefreshToken(token: string) {
+    return createHash('sha256').update(token).digest('hex');
+  }
+
+  private refreshTokenExpiresAt() {
+    const configured = Number(process.env.REFRESH_TOKEN_TTL_DAYS ?? 30);
+    const days =
+      Number.isInteger(configured) && configured >= 1 && configured <= 90
+        ? configured
+        : 30;
+    return new Date(Date.now() + days * 24 * 60 * 60 * 1000);
   }
 
   private bcryptRounds() {

@@ -54,13 +54,18 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Invalid token');
     }
 
-    request.user = await this.resolveAuthUser(userId, tokenVersion);
+    request.user = await this.resolveAuthUser(
+      userId,
+      tokenVersion,
+      workspaceId,
+    );
     return true;
   }
 
   private async resolveAuthUser(
     userId: string,
     tokenVersion: number,
+    tokenWorkspaceId: string,
   ): Promise<AuthUser> {
     // Se consulta la fuente de verdad en cada request. Asi un logout, cambio
     // de rol o eliminacion de miembro invalida el token inmediatamente.
@@ -72,6 +77,8 @@ export class JwtAuthGuard implements CanActivate {
         tokenVersion: true,
         workspaceId: true,
         workspaceMembers: {
+          where: { workspaceId: tokenWorkspaceId },
+          take: 1,
           select: {
             workspaceId: true,
             role: true,
@@ -84,13 +91,11 @@ export class JwtAuthGuard implements CanActivate {
       throw new UnauthorizedException('Invalid token');
     }
 
-    if (!user.workspaceId) {
+    if (!user.workspaceId || user.workspaceId !== tokenWorkspaceId) {
       throw new UnauthorizedException('Invalid workspace');
     }
 
-    const member = user.workspaceMembers.find(
-      (membership) => membership.workspaceId === user.workspaceId,
-    );
+    const member = user.workspaceMembers[0];
 
     if (!member) {
       throw new UnauthorizedException('Workspace membership not found');

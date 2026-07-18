@@ -108,8 +108,12 @@ type PdfCacheEntry = {
 export class QuotesService {
   private readonly logger = new Logger(QuotesService.name);
   private readonly pdfCache = new Map<string, PdfCacheEntry>();
-  private readonly pdfCacheTtlMs = Number(process.env.QUOTE_PDF_CACHE_TTL_MS ?? 5 * 60_000);
-  private readonly pdfCacheMaxEntries = Number(process.env.QUOTE_PDF_CACHE_MAX_ENTRIES ?? 50);
+  private readonly pdfCacheTtlMs = Number(
+    process.env.QUOTE_PDF_CACHE_TTL_MS ?? 5 * 60_000,
+  );
+  private readonly pdfCacheMaxEntries = Number(
+    process.env.QUOTE_PDF_CACHE_MAX_ENTRIES ?? 50,
+  );
 
   constructor(
     private readonly prisma: PrismaService,
@@ -130,6 +134,7 @@ export class QuotesService {
     const quotes = await this.prisma.quote.findMany({
       where: this.buildVisibleQuotesWhere(userId, role, workspaceId),
       orderBy: { createdAt: 'desc' },
+      take: 100,
       select: {
         id: true,
         folderId: true,
@@ -172,7 +177,11 @@ export class QuotesService {
     const profilingEnabled =
       process.env.PROFILE_QUOTES_COMPOSER_BOOTSTRAP === '1';
     const startedAt = Date.now();
-    const visibleWhere = this.buildVisibleQuotesWhere(userId, role, workspaceId);
+    const visibleWhere = this.buildVisibleQuotesWhere(
+      userId,
+      role,
+      workspaceId,
+    );
 
     const nextQuoteNumberStartedAt = Date.now();
     const [nextQuoteNumber, recentQuotes, draftQuotes] = await Promise.all([
@@ -393,7 +402,12 @@ export class QuotesService {
     isFavorite: boolean,
   ) {
     const quote = await this.prisma.quote.findFirst({
-      where: this.buildVisibleQuoteByIdWhere(userId, role, workspaceId, quoteId),
+      where: this.buildVisibleQuoteByIdWhere(
+        userId,
+        role,
+        workspaceId,
+        quoteId,
+      ),
       select: { id: true },
     });
 

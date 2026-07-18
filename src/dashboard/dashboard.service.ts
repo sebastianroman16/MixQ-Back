@@ -27,17 +27,27 @@ export class DashboardService {
   private readonly logger = new Logger(DashboardService.name);
   private readonly overviewCache = new Map<
     string,
-    { expiresAt: number; value: Awaited<ReturnType<DashboardService['buildOverview']>> }
+    {
+      expiresAt: number;
+      value: Awaited<ReturnType<DashboardService['buildOverview']>>;
+    }
   >();
   private readonly analyticsCache = new Map<
     string,
-    { expiresAt: number; value: Awaited<ReturnType<DashboardService['buildAnalytics']>> }
+    {
+      expiresAt: number;
+      value: Awaited<ReturnType<DashboardService['buildAnalytics']>>;
+    }
   >();
   private readonly overviewTtlMs = Number(
     process.env.DASHBOARD_OVERVIEW_CACHE_TTL_MS ?? 15_000,
   );
   private readonly analyticsTtlMs = Number(
     process.env.DASHBOARD_ANALYTICS_CACHE_TTL_MS ?? 45_000,
+  );
+  private readonly cacheMaxEntries = Math.max(
+    1,
+    Number(process.env.DASHBOARD_CACHE_MAX_ENTRIES ?? 500),
   );
 
   constructor(private readonly prisma: PrismaService) {}
@@ -162,7 +172,12 @@ export class DashboardService {
     }
 
     const payload = await this.buildOverview(workspaceId);
-    this.setCached(this.overviewCache, workspaceId, payload, this.overviewTtlMs);
+    this.setCached(
+      this.overviewCache,
+      workspaceId,
+      payload,
+      this.overviewTtlMs,
+    );
     return payload;
   }
 
@@ -273,7 +288,12 @@ export class DashboardService {
     }
 
     const payload = await this.buildAnalytics(workspaceId);
-    this.setCached(this.analyticsCache, workspaceId, payload, this.analyticsTtlMs);
+    this.setCached(
+      this.analyticsCache,
+      workspaceId,
+      payload,
+      this.analyticsTtlMs,
+    );
     return payload;
   }
 
@@ -510,6 +530,12 @@ export class DashboardService {
   ): void {
     if (ttlMs <= 0) {
       return;
+    }
+    if (!cache.has(key) && cache.size >= this.cacheMaxEntries) {
+      const oldestKey = cache.keys().next().value as string | undefined;
+      if (oldestKey) {
+        cache.delete(oldestKey);
+      }
     }
     cache.set(key, { expiresAt: Date.now() + ttlMs, value });
   }

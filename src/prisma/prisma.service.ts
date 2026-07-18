@@ -7,7 +7,7 @@ import {
 import { ConfigService } from '@nestjs/config';
 import { PrismaPg } from '@prisma/adapter-pg';
 import { PrismaClient } from '@prisma/client';
-import { Pool } from 'pg';
+import { Pool, PoolConfig } from 'pg';
 
 @Injectable()
 export class PrismaService
@@ -33,14 +33,11 @@ export class PrismaService
       keepAliveInitialDelayMillis: Number(
         configService.get('PG_KEEPALIVE_DELAY_MS') ?? 10_000,
       ),
-      ssl: shouldUseSsl(connectionString)
-        ? {
-            // La CA del proveedor debe estar disponible en el contenedor. No
-            // aceptar certificados no verificables evita ataques MITM contra
-            // datos y credenciales de la base de datos.
-            rejectUnauthorized: true,
-          }
-        : undefined,
+      ssl: resolvePgSsl(
+        connectionString,
+        configService.get<string>('PG_SSL_MODE'),
+        configService.get<string>('PG_SSL_CA'),
+      ),
     });
 
     pool.on('error', (error) => {
@@ -88,14 +85,55 @@ function sleep(ms: number) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-function shouldUseSsl(connectionString?: string | null) {
+export function resolvePgSsl(
+  connectionString?: string | null,
+  configuredMode?: string | null,
+  configuredCa?: string | null,
+): PoolConfig['ssl'] {
   if (!connectionString) {
-    return false;
+    return undefined;
   }
 
-  if (/sslmode=(require|verify-ca|verify-full)/i.test(connectionString)) {
-    return true;
+  const mode = (
+    configuredMode?.trim() ||
+    getSslModeFromUrl(connectionString) ||
+    ''
+  ).toLowerCase();
+
+  if (mode === 'disable') {
+    return undefined;
   }
 
-  return !/localhost|127\.0\.0\.1/i.test(connectionString);
+  if (mode === 'require' || mode === 'no-verify') {
+    return { rejectUnauthorized: false };
+  }
+
+  if (mode === 'verify-ca' || mode === 'verify-full') {
+    return {
+      rejectUnauthorized: true,
+      ...(configuredCa ? { ca: normalizeCertificate(configuredCa) } : {}),
+    };
+  }
+
+  if (/localhost|127\.0\.0\.1/i.test(connectionString)) {
+    return undefined;
+  }
+
+  // Las conexiones remotas sin modo explicito mantienen validacion estricta.
+  return {
+    rejectUnauthorized: true,
+    ...(configuredCa ? { ca: normalizeCertificate(configuredCa) } : {}),
+  };
+}
+
+function getSslModeFromUrl(connectionString: string) {
+  try {
+    return new URL(connectionString).searchParams.get('sslmode');
+  } catch {
+    return null;
+  }
+}
+
+function normalizeCertificate(certificate: string) {
+  return certificate.replace(/\\n/g, '\n');
 }

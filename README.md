@@ -42,8 +42,11 @@ Variables esperadas:
 
 ```bash
 DATABASE_URL="postgresql://USER:PASSWORD@HOST:PORT/DB?schema=public"
+PG_SSL_MODE="require"
 JWT_SECRET="change-me"
 JWT_EXPIRES_IN="1d"
+REFRESH_TOKEN_TTL_DAYS=30
+REQUEST_TIMEOUT_MS=60000
 FRONTEND_URL="http://localhost:4200"
 RESEND_API_KEY="re_xxxxxxxxxxxxx"
 RESEND_FROM_EMAIL="no-reply@tu-dominio-verificado.com"
@@ -59,6 +62,10 @@ MIXQ_PRO_MONTHLY_PRICE_CLP="14990"
 MIXQ_BUSINESS_MONTHLY_PRICE_CLP="39990"
 BILLING_CRON_SECRET="usa-un-secreto-largo"
 ```
+
+`PG_SSL_MODE` admite `disable`, `require`, `verify-ca` y `verify-full`.
+El proxy publico de Railway usa `require`; para validacion estricta configura
+`verify-full` junto con `PG_SSL_CA`.
 
 Notas de invitaciones por email:
 
@@ -94,6 +101,67 @@ pnpm run test
 pnpm run test:e2e
 pnpm run test:cov
 ```
+
+## Verificacion antes de produccion
+
+El gate automatico ejecuta pruebas unitarias, build, migraciones sobre una base
+PostgreSQL descartable y recorridos E2E de salud, autenticacion, permisos,
+workspaces, servicios, clientes frecuentes y suscripciones.
+
+Las pruebas E2E borran datos. Por seguridad solo aceptan `TEST_DATABASE_URL`
+cuando el nombre de la base contiene `test`:
+
+```bash
+createdb mixq_test
+DATABASE_URL="postgresql://postgres:postgres@localhost:5432/mixq_test" pnpm prisma:migrate:deploy
+TEST_DATABASE_URL="postgresql://postgres:postgres@localhost:5432/mixq_test" pnpm test:e2e --runInBand
+```
+
+Para comprobar un despliegue de staging con un usuario dedicado:
+
+```bash
+SMOKE_BASE_URL="https://staging-api.example.com" \
+SMOKE_EMAIL="smoke-test@example.com" \
+SMOKE_PASSWORD="..." \
+SMOKE_REQUIRE_INTEGRATIONS=true \
+pnpm smoke
+```
+
+El smoke test solo realiza lecturas despues de iniciar sesion. Para validar
+unicamente rutas publicas se puede usar `SMOKE_PUBLIC_ONLY=true`.
+
+GitHub Actions usa [.github/workflows/quality.yml](.github/workflows/quality.yml).
+Para habilitar el smoke test automatico configura:
+
+- Variable `STAGING_BASE_URL`.
+- Secrets `STAGING_SMOKE_EMAIL` y `STAGING_SMOKE_PASSWORD`.
+
+Railway consulta `GET /health/ready`, que comprueba PostgreSQL y la
+configuracion JWT. La respuesta tambien indica si mail y billing estan
+configurados, sin exponer secretos.
+
+## Sesiones y seguridad HTTP
+
+`POST /auth/login`, la verificacion de correo y la activacion de invitaciones
+devuelven `accessToken`, `refreshToken` y `refreshTokenExpiresAt`. El refresh
+token es opaco; en la base solo se almacena su hash.
+
+```http
+POST /auth/refresh
+Content-Type: application/json
+
+{"refreshToken":"..."}
+```
+
+Cada uso rota el refresh token y el anterior deja de ser valido. `logout`
+revoca todas las sesiones del usuario. El frontend debe reemplazar ambos
+tokens con la respuesta de `/auth/refresh`; una vez integrado puede reducirse
+`JWT_EXPIRES_IN` a `15m`.
+
+La API agrega headers con Helmet, HSTS en produccion, `X-Request-Id`, logs JSON
+por request y un timeout configurable con `REQUEST_TIMEOUT_MS`. Las listas sin
+paginacion explicita quedan acotadas para evitar respuestas y consultas sin
+limite.
 
 ## Endpoints actuales
 

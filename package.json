@@ -21,27 +21,29 @@
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:preprod": "pnpm test --runInBand && pnpm build && pnpm test:e2e --runInBand",
+    "smoke": "node scripts/smoke-test.mjs",
     "seed:massive": "ts-node --transpile-only prisma/seed.massive.ts",
     "seed:massive:reset": "ts-node --transpile-only prisma/seed.massive.ts --reset"
   },
   "dependencies": {
-    "@nestjs/common": "^11.0.1",
-    "@nestjs/config": "^3.3.0",
-    "@nestjs/core": "^11.0.1",
+    "@nestjs/common": "^11.1.28",
+    "@nestjs/config": "^4.0.4",
+    "@nestjs/core": "^11.1.28",
     "@nestjs/jwt": "^11.0.0",
-    "@nestjs/mapped-types": "*",
-    "@nestjs/platform-express": "^11.0.1",
-    "@prisma/adapter-pg": "^7.2.0",
-    "@prisma/client": "^7.2.0",
+    "@nestjs/mapped-types": "^2.1.1",
+    "@nestjs/platform-express": "^11.1.28",
+    "@prisma/adapter-pg": "^7.8.0",
+    "@prisma/client": "^7.8.0",
     "bcryptjs": "^3.0.2",
     "class-transformer": "^0.5.1",
     "class-validator": "^0.14.2",
     "compression": "^1.8.1",
     "express": "^5.2.1",
-    "multer": "^2.0.2",
-    "pg": "^8.13.1",
-    "prisma": "^7.2.0",
-    "puppeteer": "^23.11.1",
+    "helmet": "^8.3.0",
+    "pg": "^8.22.0",
+    "prisma": "^7.8.0",
+    "puppeteer": "^24.43.1",
     "reflect-metadata": "^0.2.2",
     "rxjs": "^7.8.1"
   },
@@ -54,7 +56,6 @@
     "@types/compression": "^1.8.1",
     "@types/express": "^5.0.0",
     "@types/jest": "^30.0.0",
-    "@types/multer": "^2.0.0",
     "@types/node": "^22.10.7",
     "@types/supertest": "^6.0.2",
     "eslint": "^9.18.0",
@@ -91,5 +92,18 @@
   },
   "prisma": {
     "seed": "ts-node --transpile-only prisma/seed.ts"
+  },
+  "pnpm": {
+    "overrides": {
+      "@hono/node-server": ">=1.19.13",
+      "ajv": ">=8.18.0",
+      "basic-ftp": ">=5.3.1",
+      "fast-uri": ">=3.1.2",
+      "ip-address": ">=10.1.1",
+      "js-yaml": ">=4.2.0",
+      "lodash": ">=4.18.0",
+      "path-to-regexp": ">=8.4.0",
+      "qs": ">=6.15.2"
+    }
   }
 }

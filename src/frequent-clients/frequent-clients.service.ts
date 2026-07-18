@@ -20,6 +20,7 @@ export class FrequentClientsService {
     return this.prisma.frequentClient.findMany({
       where: { workspaceId },
       orderBy: [{ updatedAt: 'desc' }, { label: 'asc' }],
+      take: 100,
     });
   }
 

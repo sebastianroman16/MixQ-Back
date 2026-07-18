@@ -12,6 +12,7 @@ import { SenderProfileModule } from './sender-profile/sender-profile.module';
 import { SubscriptionsModule } from './subscriptions/subscriptions.module';
 import { WorkspaceModule } from './workspace/workspace.module';
 import { FrequentClientsModule } from './frequent-clients/frequent-clients.module';
+import { HealthModule } from './health/health.module';
 
 @Module({
   imports: [
@@ -28,6 +29,7 @@ import { FrequentClientsModule } from './frequent-clients/frequent-clients.modul
     SubscriptionsModule,
     WorkspaceModule,
     FrequentClientsModule,
+    HealthModule,
   ],
   controllers: [AppController],
   providers: [AppService],

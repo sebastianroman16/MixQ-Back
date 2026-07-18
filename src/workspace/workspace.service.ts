@@ -113,6 +113,7 @@ export class WorkspaceService {
         expiresAt: { gt: new Date() },
       },
       orderBy: { createdAt: 'desc' },
+      take: 100,
     });
   }
 

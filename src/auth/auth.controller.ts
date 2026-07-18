@@ -5,6 +5,7 @@ import { VerifyInvitationCredentialsDto } from './dto/verify-invitation-credenti
 import { AuthService } from './auth.service';
 import { LoginDto } from './dto/login.dto';
 import { RegisterDto } from './dto/register.dto';
+import { RefreshTokenDto } from './dto/refresh-token.dto';
 import { VerifyEmailDto } from './dto/verify-email.dto';
 import { AuthRateLimit } from './decorators/auth-rate-limit.decorator';
 import { CurrentUser } from './decorators/current-user.decorator';
@@ -47,6 +48,17 @@ export class AuthController {
   })
   login(@Body() dto: LoginDto) {
     return this.authService.login(dto);
+  }
+
+  @Post('refresh')
+  @UseGuards(AuthRateLimitGuard)
+  @AuthRateLimit({
+    keyPrefix: 'auth:refresh',
+    limit: 20,
+    windowMs: 15 * 60 * 1000,
+  })
+  refresh(@Body() dto: RefreshTokenDto) {
+    return this.authService.refresh(dto.refreshToken);
   }
 
   @Post('invitations/activate')

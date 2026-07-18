@@ -71,7 +71,7 @@ export class ServicesService {
     const limit =
       Number.isFinite(parsedLimit) && parsedLimit > 0
         ? Math.min(parsedLimit, 250)
-        : undefined;
+        : 100;
 
     return this.prisma.service.findMany({
       where: {
@@ -106,7 +106,7 @@ export class ServicesService {
       },
       orderBy: { createdAt: 'desc' },
       include: { category: true },
-      ...(limit ? { take: limit } : {}),
+      take: limit,
     });
   }
 
@@ -232,6 +232,7 @@ export class ServicesService {
     return this.prisma.category.findMany({
       where: { workspaceId },
       orderBy: { name: 'asc' },
+      take: 200,
     });
   }
 
