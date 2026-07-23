@@ -1,8 +1,9 @@
 import { registerDecorator, ValidationOptions } from 'class-validator';
 import { isAllowedRemoteAssetUrl } from '../security/remote-asset-url';
 
-type LogoUrlValidatorOptions = {
+export type LogoUrlValidatorOptions = {
   maxBytes?: number;
+  maxPixels?: number;
 };
 
 export function IsLogoUrl(
@@ -18,47 +19,60 @@ export function IsLogoUrl(
       options: validationOptions,
       validator: {
         validate(value: unknown) {
-          if (typeof value !== 'string') {
-            return false;
-          }
-
-          if (value.startsWith('http://') || value.startsWith('https://')) {
-            return isAllowedRemoteAssetUrl(value);
-          }
-
-          if (!value.startsWith('data:')) {
-            return false;
-          }
-
-          const match = value.match(/^data:image\/(png|jpeg);base64,(.*)$/is);
-          if (!match) {
-            return false;
-          }
-
-          const base64Payload = match[1].replace(/\s/g, '');
-          let image: Buffer;
-          try {
-            image = Buffer.from(base64Payload, 'base64');
-          } catch {
-            return false;
-          }
-
-          const maxBytes = options?.maxBytes ?? 2 * 1024 * 1024;
-          return image.length <= maxBytes && isSafeLogoImage(image, match[1]);
+          return isValidLogoUrl(value, options);
         },
         defaultMessage() {
           const maxBytes = options?.maxBytes ?? 2 * 1024 * 1024;
           const maxMb = Math.round(maxBytes / 1024 / 1024);
-          return `logoUrl must be a PNG or JPEG base64 data URL up to ${maxMb}MB and 4 megapixels`;
+          const maxPixels = options?.maxPixels ?? DEFAULT_MAX_LOGO_PIXELS;
+          const maxMegapixels = maxPixels / 1_000_000;
+          return `logoUrl must be a PNG or JPEG base64 data URL up to ${maxMb}MB and ${maxMegapixels} megapixels`;
         },
       },
     });
   };
 }
 
-const MAX_LOGO_PIXELS = 4_000_000;
+const DEFAULT_MAX_LOGO_PIXELS = 16_000_000;
 
-function isSafeLogoImage(image: Buffer, mime: string) {
+export function isValidLogoUrl(
+  value: unknown,
+  options?: LogoUrlValidatorOptions,
+) {
+  if (typeof value !== 'string') {
+    return false;
+  }
+
+  if (value.startsWith('http://') || value.startsWith('https://')) {
+    return isAllowedRemoteAssetUrl(value);
+  }
+
+  if (!value.startsWith('data:')) {
+    return false;
+  }
+
+  const match = value.match(/^data:image\/(png|jpeg);base64,(.*)$/is);
+  if (!match) {
+    return false;
+  }
+
+  const base64Payload = match[2].replace(/\s/g, '');
+  let image: Buffer;
+  try {
+    image = Buffer.from(base64Payload, 'base64');
+  } catch {
+    return false;
+  }
+
+  const maxBytes = options?.maxBytes ?? 2 * 1024 * 1024;
+  const maxPixels = options?.maxPixels ?? DEFAULT_MAX_LOGO_PIXELS;
+  return (
+    image.length <= maxBytes &&
+    isSafeLogoImage(image, match[1], maxPixels)
+  );
+}
+
+function isSafeLogoImage(image: Buffer, mime: string, maxPixels: number) {
   const dimensions =
     mime.toLowerCase() === 'png'
       ? getPngDimensions(image)
@@ -67,7 +81,7 @@ function isSafeLogoImage(image: Buffer, mime: string) {
     dimensions !== null &&
     dimensions.width > 0 &&
     dimensions.height > 0 &&
-    dimensions.width * dimensions.height <= MAX_LOGO_PIXELS
+    dimensions.width * dimensions.height <= maxPixels
   );
 }
 
